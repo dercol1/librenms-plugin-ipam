@@ -1,0 +1,67 @@
+{
+    "name": "dercol1/librenms-plugin-ipam",
+    "description": "LibreNMS plugin building an IPAM database out of the addresses LibreNMS polls: network blocks, ownership, function, VLAN and site scoped duplicate detection",
+    "keywords": [
+        "librenms",
+        "plugin",
+        "ipam",
+        "ipv4",
+        "network"
+    ],
+    "type": "package",
+    "license": "GPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "diego",
+            "email": "98904661+dercol1@users.noreply.github.com"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "librenms/plugin-interfaces": "^1.0"
+    },
+    "require-dev": {
+        "laravel/framework": "^12.0",
+        "laravel/pint": "^1.13",
+        "mockery/mockery": "^1.6",
+        "orchestra/testbench": "^10.0",
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Dercol1\\LibrenmsIpam\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Dercol1\\LibrenmsIpam\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Dercol1\\LibrenmsIpam\\IpamPluginProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "test": [
+            "@test:lint",
+            "@test:types",
+            "@test:unit"
+        ],
+        "test:lint": "pint --test",
+        "test:types": "@php /opt/librenms/vendor/bin/phpstan analyse --no-progress",
+        "test:unit": "phpunit",
+        "fix": [
+            "@fix:lint"
+        ],
+        "fix:lint": "pint"
+    },
+    "config": {
+        "sort-packages": true,
+        "preferred-install": "dist"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

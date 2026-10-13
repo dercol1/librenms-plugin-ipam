@@ -1,0 +1,31 @@
+# phpstan is run with LibreNMS's own binary and larastan, which is the pair it
+# releases and tests together. A second copy inside this plugin produced two
+# incompatible service definitions for the same extension, and a third
+# combination made larastan resolve view() against an application that was not
+# booted, so every view() call in the plugin looked like a typo.
+#
+# Run it with:
+#   php /opt/librenms/vendor/bin/phpstan analyse --configuration=phpstan.neon
+#
+# Only LibreNMS's application source is scanned, never its vendor tree:
+# scanning a second vendor directory makes phpstan resolve
+# PHPUnit\Framework\TestCase to the wrong copy and then report every assertion
+# in the tests as undefined.
+parameters:
+    level: 6
+    paths:
+        - src
+        - tests
+    bootstrapFiles:
+        - tests/phpstan-bootstrap.php
+    parseModelCastsMethod: true
+    checkModelProperties: true
+    treatPhpDocTypesAsCertain: false
+
+    scanDirectories:
+        - ../librenms/app
+        - ../librenms/LibreNMS
+
+includes:
+    - ../librenms/vendor/larastan/larastan/extension.neon
+    - ../librenms/vendor/phpstan/phpstan-phpunit/extension.neon
