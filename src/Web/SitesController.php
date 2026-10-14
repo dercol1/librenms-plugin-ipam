@@ -110,12 +110,28 @@ class SitesController extends Controller
             'description' => 'nullable|string|max:255',
         ]);
 
-        Site::query()->firstOrCreate(
-            ['name' => $data['name']],
-            ['description' => $data['description'] ?? null]
-        );
+        $service = new SiteService;
 
-        return back()->with('success', __('ipam::ipam.created', ['what' => $data['name']]));
+        // a name held by a leftover is released, a name held by a live site is
+        // refused: firstOrCreate would have answered "created" while quietly
+        // handing back the existing site, which is the same lie in a softer
+        // voice
+        $release = $service->releaseName($data['name'], 0);
+
+        if ($release === 'taken') {
+            return back()->with('error', __('ipam::ipam.sites.name_taken', ['name' => $data['name']]));
+        }
+
+        Site::query()->create([
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+        ]);
+
+        $message = $release === 'released'
+            ? __('ipam::ipam.sites.name_released', ['name' => $data['name']])
+            : __('ipam::ipam.created', ['what' => $data['name']]);
+
+        return back()->with('success', $message);
     }
 
     public function update(Request $request, int $siteId): RedirectResponse
@@ -128,13 +144,28 @@ class SitesController extends Controller
             'address' => 'nullable|string|max:255',
         ]);
 
+        $service = new SiteService;
+
+        // site names are unique, so a rename onto a taken name has to be
+        // answered here rather than by a 500 from the database constraint.
+        // An empty holder is absorbed, a live one is refused.
+        $release = $service->releaseName($data['name'], $siteId);
+
+        if ($release === 'taken') {
+            return back()->with('error', __('ipam::ipam.sites.name_taken', ['name' => $data['name']]));
+        }
+
         Site::query()->whereKey($siteId)->update([
             'name' => $data['name'],
             'description' => $data['description'] ?? null,
             'address' => $data['address'] ?? null,
         ]);
 
-        return back()->with('success', __('ipam::ipam.saved', ['what' => $data['name']]));
+        $message = $release === 'released'
+            ? __('ipam::ipam.sites.name_released', ['name' => $data['name']])
+            : __('ipam::ipam.saved', ['what' => $data['name']]);
+
+        return back()->with('success', $message);
     }
 
     public function destroy(Request $request, int $siteId): RedirectResponse
@@ -178,9 +209,18 @@ class SitesController extends Controller
             'site_id' => 'required|integer',
         ]);
 
-        (new SiteService)->moveLocation((int) $data['location_id'], (int) $data['site_id']);
+        $result = (new SiteService)->moveLocation((int) $data['location_id'], (int) $data['site_id']);
 
-        return back()->with('success', __('ipam::ipam.saved', ['what' => 'location']));
+        if (! $result['moved']) {
+            return back()->with('error', __('ipam::ipam.sites.location_gone'));
+        }
+
+        // the site that lost its last location was removed with the move: the
+        // operator is told, because a site disappearing has to be something
+        // that happened on purpose and in the open
+        return back()->with('success', $result['emptied'] !== null
+            ? __('ipam::ipam.sites.site_emptied', ['name' => $result['emptied']->name])
+            : __('ipam::ipam.saved', ['what' => 'location']));
     }
 
     /**

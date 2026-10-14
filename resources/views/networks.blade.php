@@ -5,6 +5,9 @@
 @section('content')
     <div class="container-fluid">
         @include('ipam::partials.nav', ['current' => 'networks'])
+
+        {{-- what the last action answered, and what validation refused: without this a refused form looks exactly like a working one --}}
+        @include('ipam::partials.notices')
         @include('ipam::partials.options')
         @include('ipam::partials.fill')
 
@@ -40,7 +43,7 @@
 
             <div class="tw:flex tw:flex-wrap tw:items-end tw:gap-2 tw:mb-3">
                 <form method="get" class="tw:flex tw:flex-wrap tw:items-end tw:gap-2 tw:m-0">
-                    @foreach (request()->except(['q', 'page']) as $key => $value)
+                    @foreach (request()->except(['q', 'page', 'described', 'show_hidden']) as $key => $value)
                         @if (is_scalar($value) && $value !== '')
                             <input type="hidden" name="{{ $key }}" value="{{ $value }}">
                         @endif
@@ -57,6 +60,24 @@
                             <option value="">{{ __('ipam::ipam.networks.all') }}</option>
                             <option value="yes" @selected(request('described') === 'yes')>{{ __('ipam::ipam.networks.only_described') }}</option>
                             <option value="no" @selected(request('described') === 'no')>{{ __('ipam::ipam.networks.only_undescribed') }}</option>
+                        </select>
+                    </div>
+                    <div class="form-group tw:mb-0">
+                        <label class="sr-only" for="net-owner">{{ __('ipam::ipam.networks.owner') }}</label>
+                        <select name="owner_id" id="net-owner" class="form-control form-control-sm" onchange="this.form.submit()">
+                            <option value="">{{ __('ipam::ipam.networks.owner') }}: {{ __('ipam::ipam.networks.all') }}</option>
+                            @foreach ($options['owners'] as $id => $name)
+                                <option value="{{ $id }}" @selected((string) request('owner_id') === (string) $id)>{{ $name }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="form-group tw:mb-0">
+                        <label class="sr-only" for="net-function">{{ __('ipam::ipam.networks.function') }}</label>
+                        <select name="function_id" id="net-function" class="form-control form-control-sm" onchange="this.form.submit()">
+                            <option value="">{{ __('ipam::ipam.networks.function') }}: {{ __('ipam::ipam.networks.all') }}</option>
+                            @foreach ($options['functions'] as $id => $name)
+                                <option value="{{ $id }}" @selected((string) request('function_id') === (string) $id)>{{ $name }}</option>
+                            @endforeach
                         </select>
                     </div>
                     <div class="form-check tw:mb-0 tw:mr-2">
@@ -79,11 +100,11 @@
                 <table class="table table-sm table-hover table-striped">
                     <thead>
                     <tr>
-                        <th>{{ __('ipam::ipam.networks.cidr') }}</th>
-                        <th>{{ __('ipam::ipam.networks.site') }}</th>
-                        <th>{{ __('ipam::ipam.networks.owner') }}</th>
-                        <th>{{ __('ipam::ipam.networks.function') }}</th>
-                        <th class="text-right">{{ __('ipam::ipam.networks.addresses') }}</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'cidr', 'label' => __('ipam::ipam.networks.cidr')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'site', 'label' => __('ipam::ipam.networks.site')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'owner', 'label' => __('ipam::ipam.networks.owner')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'function', 'label' => __('ipam::ipam.networks.function')])</th>
+                        <th class="text-right">@include('ipam::partials.sortable', ['column' => 'addresses', 'label' => __('ipam::ipam.networks.addresses')])</th>
                         <th>{{ __('ipam::ipam.networks.description') }}</th>
                         @can('ipam.manage')
                             <th></th>

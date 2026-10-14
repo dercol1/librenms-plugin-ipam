@@ -60,6 +60,10 @@ final class NetworksPage
             $query->where('net_owner_id', (int) $request->input('owner_id'));
         }
 
+        if ($request->filled('function_id')) {
+            $query->where('net_function_id', (int) $request->input('function_id'));
+        }
+
         if ($request->filled('described')) {
             // "described" means somebody said something about this range
             $request->input('described') === 'yes'
@@ -67,6 +71,32 @@ final class NetworksPage
                     $q->where('site_id', '>', 0)->orWhere('net_owner_id', '>', 0);
                 })
                 : $query->where('site_id', 0)->where('net_owner_id', 0);
+        }
+
+        // the sort the headers asked for. never a raw column name from the
+        // request: it would be an injection point, so the column is looked up.
+        $sortable = [
+            'cidr' => null, // handled on its own: the binary, not the string
+            'site' => 'site_id',
+            'owner' => 'net_owner_id',
+            'function' => 'net_function_id',
+            'addresses' => 'addresses_count',
+        ];
+
+        $requested = (string) $request->input('order_by');
+
+        if ($requested === 'cidr' && $request->filled('order_by')) {
+            $direction = strtolower((string) $request->input('order_direction', 'asc')) === 'desc' ? 'desc' : 'asc';
+
+            // packed_start is the network in binary: sorting on it is the
+            // numeric order, which is the order an address plan reads in
+            $query->reOrder()->orderBy('family', $direction)->orderBy('packed_start', $direction);
+        } elseif (isset($sortable[$requested]) && $request->filled('order_by')) {
+            $direction = strtolower((string) $request->input('order_direction', 'asc')) === 'desc' ? 'desc' : 'asc';
+
+            // addresses_count is the withCount alias, and sorting on it works
+            // like any other column once the query has selected the models
+            $query->reOrder()->orderBy($sortable[$requested], $direction);
         }
 
         return $query;

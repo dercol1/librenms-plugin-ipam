@@ -6,6 +6,9 @@
     <div class="container-fluid">
         @include('ipam::partials.nav', ['current' => 'taxonomies'])
 
+        {{-- what the last action answered, and what validation refused: without this a refused form looks exactly like a working one --}}
+        @include('ipam::partials.notices')
+
         <x-panel id="ipam-taxonomies-intro-panel">
             <x-slot name="title">
                 <i class="fa fa-tags fa-fw" aria-hidden="true"></i>
@@ -34,9 +37,9 @@
                     <table class="table table-sm table-hover table-striped">
                         <thead>
                         <tr>
-                            <th>{{ __('ipam::ipam.taxonomies.name') }}</th>
+                            <th>@include('ipam::partials.sortable', ['column' => 'name', 'label' => __('ipam::ipam.taxonomies.name')])</th>
                             <th>{{ __('ipam::ipam.taxonomies.description') }}</th>
-                            <th class="text-right">{{ $list['used_by'] }}</th>
+                            <th class="text-right">@include('ipam::partials.sortable', ['column' => 'usage', 'label' => $list['used_by']])</th>
                             @if ($canManage)
                                 <th></th>
                             @endif
@@ -44,13 +47,43 @@
                         </thead>
                         <tbody>
                         @forelse ($list['entries'] as $entry)
+                            @php
+                                // where each badge lands: the page that carries the
+                                // objects, carrying the filter that picks exactly
+                                // them out
+                                $filter = match (true) {
+                                    $key === 'net-function' => 'function_id',
+                                    $key === 'vlan-owner' => 'owner_id',
+                                    default => 'owner_id',
+                                };
+                            @endphp
                             <tr>
                                 <td><strong>{{ $entry['name'] }}</strong></td>
                                 <td class="tw:text-sm">{{ $entry['description'] }}</td>
                                 <td class="text-right">
                                     @foreach ($entry['usage'] as $what => $count)
+                                        @php
+                                            // blocks and addresses carry a function by
+                                            // its own column, vlans carry their owner.
+                                            // route(), not url(): url() appends its
+                                            // second argument as path segments, which
+                                            // turned the filter into addresses/1
+                                            $target = match ($what) {
+                                                'blocks' => 'networks',
+                                                'addresses' => 'addresses',
+                                                'vlans' => 'vlans',
+                                            };
+
+                                            $usageUrl = \Illuminate\Support\Facades\Route::has('ipam.' . $target)
+                                                ? route('ipam.' . $target, [$filter => $entry['id']])
+                                                : url('plugin/ipam/' . $target . '?' . $filter . '=' . $entry['id']);
+                                        @endphp
                                         @if ($count > 0)
-                                            <span class="label label-info">{{ number_format($count) }} {{ $what }}</span>
+                                            <a href="{{ $usageUrl }}"
+                                               class="label label-info"
+                                               title="{{ __('ipam::ipam.taxonomies.show_usage') }}">
+                                                {{ number_format($count) }} {{ __($what === 'addresses' ? 'ipam::ipam.taxonomies.usage_addresses' : ($what === 'blocks' ? 'ipam::ipam.taxonomies.usage_blocks' : 'ipam::ipam.taxonomies.usage_vlans')) }}
+                                            </a>
                                         @endif
                                     @endforeach
                                     @if (array_sum($entry['usage']) === 0)

@@ -13,11 +13,11 @@ use Dercol1\LibrenmsIpam\Models\Vlan;
 use Dercol1\LibrenmsIpam\Settings;
 use Dercol1\LibrenmsIpam\Support\Cidr;
 use Dercol1\LibrenmsIpam\Support\SchemaInstaller;
+use Dercol1\LibrenmsIpam\Support\ScopeRules;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\View\View;
 
@@ -112,9 +112,14 @@ class AddressesController extends Controller
 
                 if ($cidr !== null) {
                     // binary comparison so 10.14.146.0/24 does not also match
-                    // 10.14.146.7 as a string would
+                    // 10.14.146.7 as a string would. The function follows the
+                    // family of the typed range: INET_ATON on an ipv6 string
+                    // answers NULL, which is how a v6 search once matched
+                    // nothing at all.
+                    $function = $cidr->getFamily() === 4 ? 'INET_ATON' : 'INET6_ATON';
+
                     $query->where('family', $cidr->getFamily())
-                        ->whereRaw('INET_ATON(address) BETWEEN INET_ATON(?) AND INET_ATON(?)', [
+                        ->whereRaw("$function(address) BETWEEN $function(?) AND $function(?)", [
                             (string) inet_ntop($cidr->packedStart()),
                             (string) inet_ntop($cidr->packedEnd()),
                         ]);
@@ -142,6 +147,10 @@ class AddressesController extends Controller
             $query->where('net_owner_id', (int) $request->input('owner_id'));
         }
 
+        if ($request->filled('function_id')) {
+            $query->where('net_function_id', (int) $request->input('function_id'));
+        }
+
         if ($request->filled('device_id')) {
             $query->where('device_id', (int) $request->input('device_id'));
         }
@@ -150,25 +159,113 @@ class AddressesController extends Controller
             $query->unscoped();
         }
 
-        if ($request->filled('order_by')) {
-            // never sort on a raw column name, it would be an injection point
-            $sortable = [
-                'address' => DB::raw('INET_ATON(address)'),
-                'site' => 'site_id',
-                'vlan' => 'vlan_record_id',
-                'device' => 'device_id',
-                'last_seen' => 'last_seen',
-            ];
+        // never sort on a raw column name, it would be an injection point
+        $sortable = [
+            // the id columns sort by the ids, which is the order the operator
+            // means: by block, by site, by vlan, by owner, by device
+            'block' => 'network_id',
+            'site' => 'site_id',
+            'vlan' => 'vlan_record_id',
+            'owner' => 'net_owner_id',
+            'function' => 'net_function_id',
+            'device' => 'device_id',
+            'last_seen' => 'last_seen',
+        ];
 
-            $orderBy = (string) $request->input('order_by');
-            $direction = strtolower((string) $request->input('order_direction', 'asc')) === 'desc' ? 'desc' : 'asc';
-            $query->orderBy($sortable[$orderBy] ?? 'address', $direction);
+        $requested = (string) $request->input('order_by');
+        $descending = strtolower((string) $request->input('order_direction', 'asc')) === 'desc';
+        $direction = $descending ? 'desc' : 'asc';
+
+        if ($requested === 'address') {
+            // family first: the binary of a 4 byte and a 16 byte address are
+            // not comparable to each other, and mixing them scrambles both.
+            // INET6_ATON carries both families in MySQL, and the sqlite stand
+            // in the tests registers the same.
+            $query->orderBy('family', $direction)
+                ->orderByRaw('INET6_ATON(address) ' . $direction);
+        } elseif (isset($sortable[$requested]) && $request->filled('order_by')) {
+            $query->orderBy($sortable[$requested], $direction);
         } else {
-            // numeric, not lexical: 10.14.9.1 has to sort before 10.14.10.1
-            $query->orderBy('family')->orderByRaw('INET_ATON(address)');
+            // the natural order, which the third click on a header returns to
+            $query->orderBy('family')->orderByRaw('INET6_ATON(address)');
         }
 
         return $this->visibleTo($query, $request);
+    }
+
+    /**
+     * Reclassify a selection of addresses in one move.
+     *
+     * The selection can be the rows whose boxes were ticked, or every row the
+     * current filters match. The second form is what makes the first useful:
+     * "everything this owner still claims" is a filter, not a page at a time
+     * of ticking. The filter params travel with the form and the same
+     * filtered() that builds the list rebuilds the set, so what gets changed
+     * is exactly what the operator was looking at — including the device
+     * visibility rules.
+     *
+     * A field left on "leave unchanged" is not written. A field set to
+     * "inherit" writes 0, which is the same distinction the row edit makes,
+     * because bulk is not a way to accidentally strip a classification
+     * nobody asked to strip.
+     */
+    public function bulk(Request $request): RedirectResponse
+    {
+        $this->authorizeManage();
+
+        $data = $request->validate($this->scopeFieldRules($request) + [
+            'ids' => ['nullable', 'array'],
+            'ids.*' => ['integer'],
+            'select_all_matching' => ['nullable', 'boolean'],
+            'pin' => ['nullable', 'boolean'],
+        ]);
+
+        if ($request->boolean('select_all_matching')) {
+            // the same builder, the same filters, the same visibility: what
+            // the operator saw is what gets changed
+            $query = $this->filtered($request);
+        } else {
+            $ids = array_values(array_map('intval', $data['ids'] ?? []));
+
+            if ($ids === []) {
+                return back()->with('error', __('ipam::ipam.nothing_to_apply'));
+            }
+
+            // a selection is explicit intent, so pinned rows are included:
+            // the operator can see which rows carry the pin, and asked for
+            // these. Visibility still applies: a crafted request cannot reach
+            // rows the user may not see.
+            $query = $this->visibleTo(
+                Address::query()->whereIntegerInRaw('address_record_id', $ids),
+                $request
+            );
+        }
+
+        $attributes = [];
+
+        foreach (['site_id', 'vlan_record_id', 'net_owner_id', 'net_function_id'] as $field) {
+            $value = $request->input($field);
+
+            // absent or '' means "leave alone"; 0 means "inherit"
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $attributes[$field] = (int) $value;
+        }
+
+        if ($attributes === [] && ! $request->boolean('pin')) {
+            return back()->with('error', __('ipam::ipam.nothing_to_apply'));
+        }
+
+        if ($request->boolean('pin')) {
+            $attributes['scope_locked'] = true;
+        }
+
+        $count = (clone $query)->toBase()->count();
+        $query->toBase()->update($attributes);
+
+        return back()->with('success', __('ipam::ipam.bulk.applied', ['count' => $count]));
     }
 
     /**
@@ -193,6 +290,23 @@ class AddressesController extends Controller
     }
 
     /**
+     * The validation rules for the four classification fields, built per
+     * request. One shared builder: 0 means "inherit from the block" and is
+     * always valid, anything above it has to name a row that exists.
+     *
+     * @return array<string, list<string>>
+     */
+    private function scopeFieldRules(Request $request): array
+    {
+        return ScopeRules::make([
+            'site_id' => ['ipam_sites', 'site_id'],
+            'vlan_record_id' => ['ipam_vlans', 'vlan_record_id'],
+            'net_owner_id' => ['ipam_net_owners', 'net_owner_id'],
+            'net_function_id' => ['ipam_net_functions', 'net_function_id'],
+        ], $request);
+    }
+
+    /**
      * Override the scope of one occurrence.
      *
      * Setting scope_locked is what makes the change stick: the next import
@@ -204,11 +318,7 @@ class AddressesController extends Controller
 
         $address = Address::findOrFail($addressId);
 
-        $data = $request->validate([
-            'site_id' => ['nullable', 'integer', 'exists:ipam_sites,site_id'],
-            'vlan_record_id' => ['nullable', 'integer', 'exists:ipam_vlans,vlan_record_id'],
-            'net_owner_id' => ['nullable', 'integer', 'exists:ipam_net_owners,net_owner_id'],
-            'net_function_id' => ['nullable', 'integer', 'exists:ipam_net_functions,net_function_id'],
+        $data = $request->validate($this->scopeFieldRules($request) + [
             'description' => ['nullable', 'string', 'max:255'],
             'lock' => ['nullable', 'boolean'],
             'ignored' => ['nullable', 'boolean'],
@@ -252,12 +362,16 @@ class AddressesController extends Controller
     {
         $this->authorizeManage();
 
-        $data = $request->validate([
+        // the "--" options of the add form send 0 for every field the
+        // operator left on "inherit", which means "from the enclosing block"
+        // here too: those values come from the block below, once the row exists
+        $data = $request->validate(ScopeRules::make([
+            'site_id' => ['ipam_sites', 'site_id'],
+            'vlan_record_id' => ['ipam_vlans', 'vlan_record_id'],
+            'net_owner_id' => ['ipam_net_owners', 'net_owner_id'],
+            'net_function_id' => ['ipam_net_functions', 'net_function_id'],
+        ], $request) + [
             'address' => ['required', 'string', 'max:64'],
-            'site_id' => ['nullable', 'integer', 'exists:ipam_sites,site_id'],
-            'vlan_record_id' => ['nullable', 'integer', 'exists:ipam_vlans,vlan_record_id'],
-            'net_owner_id' => ['nullable', 'integer', 'exists:ipam_net_owners,net_owner_id'],
-            'net_function_id' => ['nullable', 'integer', 'exists:ipam_net_functions,net_function_id'],
             'description' => ['nullable', 'string', 'max:255'],
         ]);
 
@@ -321,12 +435,8 @@ class AddressesController extends Controller
     {
         $this->authorizeManage();
 
-        $data = $request->validate([
+        $data = $request->validate($this->scopeFieldRules($request) + [
             'network_id' => ['required', 'integer', 'exists:ipam_networks,network_id'],
-            'site_id' => ['nullable', 'integer', 'exists:ipam_sites,site_id'],
-            'vlan_record_id' => ['nullable', 'integer', 'exists:ipam_vlans,vlan_record_id'],
-            'net_owner_id' => ['nullable', 'integer', 'exists:ipam_net_owners,net_owner_id'],
-            'net_function_id' => ['nullable', 'integer', 'exists:ipam_net_functions,net_function_id'],
             'only_unclassified' => ['nullable', 'boolean'],
         ]);
 

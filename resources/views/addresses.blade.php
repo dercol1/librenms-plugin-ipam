@@ -5,6 +5,9 @@
 @section('content')
     <div class="container-fluid">
         @include('ipam::partials.nav', ['current' => 'addresses'])
+
+        {{-- what the last action answered, and what validation refused: without this a refused form looks exactly like a working one --}}
+        @include('ipam::partials.notices')
         @include('ipam::partials.options')
         @include('ipam::partials.fill')
 
@@ -40,7 +43,11 @@
 
             <div class="tw:flex tw:flex-wrap tw:items-end tw:gap-2 tw:mb-3">
                 <form method="get" class="tw:flex tw:flex-wrap tw:items-end tw:gap-2 tw:m-0">
-                    @foreach (request()->except(['q', 'page']) as $key => $value)
+                    {{-- every field this form carries by itself stays out of the
+                         hidden echo: a checkbox that is unchecked is absent from
+                         the submit, and a hidden input with the same name would
+                         put the filter back and make it impossible to clear --}}
+                    @foreach (request()->except(['q', 'page', 'unclassified', 'show_hidden']) as $key => $value)
                         @if (is_scalar($value) && $value !== '')
                             <input type="hidden" name="{{ $key }}" value="{{ $value }}">
                         @endif
@@ -58,6 +65,24 @@
                             <option value="">{{ __('ipam::ipam.addresses.any_family') }}</option>
                             <option value="4" @selected(request('family') === '4')>{{ __('ipam::ipam.addresses.ipv4') }}</option>
                             <option value="6" @selected(request('family') === '6')>{{ __('ipam::ipam.addresses.ipv6') }}</option>
+                        </select>
+                    </div>
+                    <div class="form-group tw:mb-0">
+                        <label class="sr-only" for="addr-owner">{{ __('ipam::ipam.addresses.owner') }}</label>
+                        <select name="owner_id" id="addr-owner" class="form-control form-control-sm" onchange="this.form.submit()">
+                            <option value="">{{ __('ipam::ipam.addresses.owner') }}: {{ __('ipam::ipam.networks.all') }}</option>
+                            @foreach ($options['owners'] as $id => $name)
+                                <option value="{{ $id }}" @selected((string) request('owner_id') === (string) $id)>{{ $name }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="form-group tw:mb-0">
+                        <label class="sr-only" for="addr-function">{{ __('ipam::ipam.addresses.function') }}</label>
+                        <select name="function_id" id="addr-function" class="form-control form-control-sm" onchange="this.form.submit()">
+                            <option value="">{{ __('ipam::ipam.addresses.function') }}: {{ __('ipam::ipam.networks.all') }}</option>
+                            @foreach ($options['functions'] as $id => $name)
+                                <option value="{{ $id }}" @selected((string) request('function_id') === (string) $id)>{{ $name }}</option>
+                            @endforeach
                         </select>
                     </div>
                     <div class="form-check tw:mb-0 tw:mr-2">
@@ -87,15 +112,22 @@
             </div>
 
             <div class="table-responsive">
-                <table class="table table-sm table-hover table-striped">
+                <table class="table table-sm table-hover table-striped" id="ipam-addresses-table">
                     <thead>
                     <tr>
-                        <th>{{ __('ipam::ipam.addresses.address') }}</th>
-                        <th>{{ __('ipam::ipam.addresses.block') }}</th>
-                        <th>{{ __('ipam::ipam.addresses.site') }}</th>
-                        <th>{{ __('ipam::ipam.addresses.vlan') }}</th>
-                        <th>{{ __('ipam::ipam.addresses.owner') }}</th>
-                        <th>{{ __('ipam::ipam.addresses.device') }}</th>
+                        @can('ipam.manage')
+                            <th style="width: 2rem;">
+                                <input type="checkbox" id="ipam-select-page" title="{{ __('ipam::ipam.addresses.select_all') }}"
+                                       class="ipam-row-selector">
+                            </th>
+                        @endcan
+                        <th>@include('ipam::partials.sortable', ['column' => 'address', 'label' => __('ipam::ipam.addresses.address')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'block', 'label' => __('ipam::ipam.addresses.block')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'site', 'label' => __('ipam::ipam.addresses.site')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'vlan', 'label' => __('ipam::ipam.addresses.vlan')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'owner', 'label' => __('ipam::ipam.addresses.owner')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'function', 'label' => __('ipam::ipam.addresses.function')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'device', 'label' => __('ipam::ipam.addresses.device')])</th>
                         <th>{{ __('ipam::ipam.addresses.state') }}</th>
                         @can('ipam.manage')
                             <th></th>
@@ -105,6 +137,12 @@
                     <tbody>
                     @forelse ($addresses ?? [] as $address)
                         <tr>
+                            @can('ipam.manage')
+                                <td>
+                                    <input type="checkbox" name="ids[]" value="{{ $address->address_record_id }}"
+                                           class="ipam-row-selector" form="ipam-bulk-form">
+                                </td>
+                            @endcan
                             <td>
                                 <code class="tw:text-gray-900 tw:dark:text-gray-100">{{ $address->address }}</code>
                                 <span class="text-muted tw:text-xs">/{{ $address->prefixlen }}</span>
@@ -141,6 +179,7 @@
                                 @endif
                             </td>
                             <td>{{ $address->owner?->name ?? '-' }}</td>
+                            <td>{{ $address->function?->name ?? '-' }}</td>
                             <td>
                                 @php($addressDevice = $address->device())
                                 @if ($addressDevice && \Illuminate\Support\Facades\Gate::forUser(request()->user())->allows('view', $addressDevice))
@@ -180,7 +219,7 @@
                         </tr>
                         @can('ipam.manage')
                             <tr id="addr-{{ $address->address_record_id }}" class="collapse">
-                                <td colspan="8" style="background-color: rgba(0,0,0,.02);">
+                                <td colspan="10" style="background-color: rgba(0,0,0,.02);">
                                     <form method="post"
                                           action="{{ \Illuminate\Support\Facades\Route::has('ipam.addresses.update') ? route('ipam.addresses.update', $address->address_record_id) : url('plugin/ipam/addresses/' . $address->address_record_id) }}">
                                         @csrf
@@ -243,7 +282,7 @@
                         @endcan
                     @empty
                         <tr>
-                            <td colspan="8" class="text-center text-muted">{{ __('ipam::ipam.not_installed') }}</td>
+                            <td colspan="10" class="text-center text-muted">{{ __('ipam::ipam.not_installed') }}</td>
                         </tr>
                     @endforelse
                     </tbody>
@@ -253,6 +292,23 @@
             @if (is_object($addresses ?? null) && method_exists($addresses, 'links'))
                 {!! $addresses->links() !!}
             @endif
+
+            @can('ipam.manage')
+                {{-- the selection bar: what is ticked, and the way to take every
+                     row the filters match instead of ticking by hand --}}
+                <div class="panel panel-default tw:mt-3" id="ipam-bulk-bar">
+                    <div class="panel-body tw:flex tw:flex-wrap tw:items-center tw:gap-3">
+                        <span class="label label-info" id="ipam-selected-count">{{ __('ipam::ipam.addresses.selected_count', ['count' => 0]) }}</span>
+
+                        <span class="text-muted tw:text-sm">{{ __('ipam::ipam.bulk.intro') }}</span>
+
+                        <label class="form-check tw:mb-0 tw:ml-auto" title="{{ __('ipam::ipam.addresses.select_all_matching') }}">
+                            <input type="checkbox" name="select_all_matching" value="1" form="ipam-bulk-form">
+                            {{ __('ipam::ipam.addresses.select_all_matching') }}
+                        </label>
+                    </div>
+                </div>
+            @endcan
         </x-panel>
 
         <x-panel id="ipam-free-panel">
@@ -325,6 +381,120 @@
                 @endif
             @endif
         </x-panel>
+
+        @can('ipam.manage')
+            <x-panel id="ipam-bulk-panel">
+                <x-slot name="title">
+                    <i class="fa fa-check-double fa-fw" aria-hidden="true"></i>
+                    {{ __('ipam::ipam.bulk.title') }}
+                </x-slot>
+
+                <form method="post"
+                      action="{{ \Illuminate\Support\Facades\Route::has('ipam.addresses.bulk') ? route('ipam.addresses.bulk') : url('plugin/ipam/addresses/bulk') }}"
+                      id="ipam-bulk-form">
+                    @csrf
+
+                    {{-- the filters the list is showing, replayed on the server:
+                         "every address matching the filters" has to mean the
+                         same rows the operator was looking at, and the same
+                         builder that made the list is the only honest way to
+                         rebuild that set --}}
+                    @foreach (['q', 'family', 'site_id', 'vlan_record_id', 'network_id', 'owner_id', 'function_id', 'unclassified', 'show_hidden'] as $filterKey)
+                        @if (is_scalar(request($filterKey)) && request($filterKey) !== '')
+                            <input type="hidden" name="{{ $filterKey }}" value="{{ request($filterKey) }}">
+                        @endif
+                    @endforeach
+
+                    <div class="row">
+                        <div class="form-group col-md-2">
+                            <label>{{ __('ipam::ipam.addresses.site') }}</label>
+                            <select name="site_id" class="form-control form-control-sm">
+                                <option value="">{{ __('ipam::ipam.bulk.leave_unchanged') }}</option>
+                                <option value="0">{{ __('ipam::ipam.bulk.inherit') }}</option>
+                                @foreach ($options['sites'] as $id => $name)
+                                    <option value="{{ $id }}">{{ $name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>{{ __('ipam::ipam.addresses.vlan') }}</label>
+                            <select name="vlan_record_id" class="form-control form-control-sm">
+                                <option value="">{{ __('ipam::ipam.bulk.leave_unchanged') }}</option>
+                                <option value="0">{{ __('ipam::ipam.bulk.inherit') }}</option>
+                                @foreach ($options['vlans'] as $id => $label)
+                                    <option value="{{ $id }}">{{ $label }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>{{ __('ipam::ipam.addresses.owner') }}</label>
+                            <select name="net_owner_id" class="form-control form-control-sm">
+                                <option value="">{{ __('ipam::ipam.bulk.leave_unchanged') }}</option>
+                                <option value="0">{{ __('ipam::ipam.bulk.inherit') }}</option>
+                                @foreach ($options['owners'] as $id => $name)
+                                    <option value="{{ $id }}">{{ $name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>{{ __('ipam::ipam.addresses.function') }}</label>
+                            <select name="net_function_id" class="form-control form-control-sm">
+                                <option value="">{{ __('ipam::ipam.bulk.leave_unchanged') }}</option>
+                                <option value="0">{{ __('ipam::ipam.bulk.inherit') }}</option>
+                                @foreach ($options['functions'] as $id => $name)
+                                    <option value="{{ $id }}">{{ $name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>&nbsp;</label>
+                            <div class="form-check">
+                                <label class="tw:mb-0" title="{{ __('ipam::ipam.bulk.pin') }}">
+                                    <input type="checkbox" name="pin" value="1">
+                                    {{ __('ipam::ipam.addresses.lock_short') }}
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>&nbsp;</label>
+                            <button type="submit" class="btn btn-primary btn-sm">{{ __('ipam::ipam.bulk.apply') }}</button>
+                        </div>
+                    </div>
+                </form>
+            </x-panel>
+
+            {{-- selection: the page checkbox, the counter, and nothing more.
+                 jQuery is already on the page, and the two behaviours are one
+                 line each --}}
+            @push('scripts')
+                <script>
+                    $(function () {
+                        var rows = '#ipam-addresses-table input.ipam-row-selector';
+
+                        function countSelected() {
+                            return $(rows + ':checked').length;
+                        }
+
+                        function showCount() {
+                            var label = {{ \Illuminate\Support\Js::from(__('ipam::ipam.addresses.selected_count', ['count' => ':count'])) }};
+                            $('#ipam-selected-count').text(label.replace(':count', countSelected()));
+                        }
+
+                        // the header box ticks the page, and only the page:
+                        // "everything" is a different checkbox with a server
+                        // side meaning, and conflating the two would change
+                        // rows the operator never saw
+                        $('#ipam-select-page').on('change', function () {
+                            $(rows).prop('checked', this.checked);
+                            showCount();
+                        });
+
+                        $(rows).on('change', showCount);
+                        showCount();
+                    });
+                </script>
+            @endpush
+        @endcan
 
         @can('ipam.manage')
             <x-panel id="ipam-add-address-panel">

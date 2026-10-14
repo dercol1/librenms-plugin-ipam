@@ -4,6 +4,7 @@ namespace Dercol1\LibrenmsIpam\Collision;
 
 use Dercol1\LibrenmsIpam\Models\Address;
 use Dercol1\LibrenmsIpam\Models\Duplicate;
+use Dercol1\LibrenmsIpam\Models\Vlan;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -51,7 +52,13 @@ class DuplicateDetector
     /**
      * Turn grouped rows into DuplicateGroup objects.
      *
-     * @param  Collection<int, Address>  $rows
+     * The scope columns arrive as vlan_record_id, vlan_group_id and site_id.
+     * A stretched vlan sets the group and zeroes the record and the site, so
+     * the rest of the pipeline — the group object, the annotation identity,
+     * the report — carries the group wherever a plain vlan would have carried
+     * the record.
+     *
+     * @param  Collection<int, \stdClass>  $rows
      * @return list<DuplicateGroup>
      */
     private function collect($rows): array
@@ -65,13 +72,15 @@ class DuplicateDetector
         $groups = [];
 
         foreach ($rows as $row) {
-            $scopeVlan = $vlanColumn === null ? 0 : (int) $row->vlan_record_id;
+            $scopeVlan = $vlanColumn === null ? 0 : (int) $row->scope_vlan;
+            $scopeGroup = $vlanColumn === null ? 0 : (int) $row->scope_group;
 
             $group = $this->buildGroup(
                 (int) $row->family,
                 $row->address,
                 $scopeVlan,
-                (int) $row->site_id
+                (int) $row->scope_site,
+                $scopeGroup
             );
 
             if ($group === null) {
@@ -80,7 +89,7 @@ class DuplicateDetector
 
             // keyed by address *and* scope: one address can repeat in two
             // vlans at once, and those are two separate findings
-            $groups[$row->address . '-' . $scopeVlan . '-' . $row->site_id] = $group;
+            $groups[$row->address . '-' . $scopeVlan . '-' . $scopeGroup . '-' . $row->scope_site] = $group;
         }
 
         return array_values($groups);
@@ -101,31 +110,60 @@ class DuplicateDetector
     /**
      * Group by address and scope, keeping only the groups that repeat.
      *
+     * Built on the query builder rather than the Address model on purpose:
+     * the scope columns are computed, not model attributes, and reading a
+     * CASE alias off a typed model is a lie the type checker catches and the
+     * rows cannot tell.
+     *
+     * When the vlan is part of the scope, the scope is computed rather than
+     * read: a record whose vlan_group_id is set belongs to a broadcast domain
+     * carried across sites, and inside such a domain the vlan group alone is
+     * the scope — the record id and the site both stop separating, because at
+     * layer 2 there is one domain and one place for an address to be.
+     *
      * @param  string|null  $vlanColumn  the vlan column when it is part of the scope, null otherwise
-     * @return Builder<Address>
      */
-    private function groupQuery(?int $siteId, ?string $vlanColumn, int $limit, ?int $vlanRecordId = null): Builder
+    private function groupQuery(?int $siteId, ?string $vlanColumn, int $limit, ?int $vlanRecordId = null): \Illuminate\Database\Query\Builder
     {
-        $scopeColumns = ['address', 'family', 'site_id'];
-
-        if ($vlanColumn !== null) {
-            $scopeColumns[] = 'vlan_record_id';
-        }
-
-        $query = Address::query()
-            ->select($scopeColumns)
+        $query = DB::table('ipam_addresses')
             ->selectRaw('COUNT(*) as occurrences')
-            ->groupBy($scopeColumns)
+            ->groupBy('ipam_addresses.family')
+            ->groupBy('ipam_addresses.address')
             ->having('occurrences', '>', 1)
             ->orderBy('occurrences', 'desc')
-            ->orderBy('address')
+            ->orderBy('ipam_addresses.address')
             ->limit($limit);
+
+        if ($vlanColumn === null) {
+            // no vlan in the scope: the site separates, as it always did
+            $query->selectRaw('ipam_addresses.site_id as scope_site')
+                ->selectRaw('ipam_addresses.family as family')
+                ->selectRaw('ipam_addresses.address as address')
+                ->groupBy('scope_site');
+        } else {
+            $query->selectRaw('CASE WHEN v.vlan_group_id > 0 THEN 0 ELSE ipam_addresses.vlan_record_id END as scope_vlan')
+                ->selectRaw('CASE WHEN v.vlan_group_id > 0 THEN v.vlan_group_id ELSE 0 END as scope_group')
+                ->selectRaw('CASE WHEN v.vlan_group_id > 0 THEN 0 ELSE ipam_addresses.site_id END as scope_site')
+                ->selectRaw('ipam_addresses.family as family')
+                ->selectRaw('ipam_addresses.address as address')
+                // the join is over the record the address was reported under;
+                // every record of the group carries the same group id, so each
+                // address lands in its domain whichever site reported it
+                ->leftJoin('ipam_vlans as v', 'v.vlan_record_id', '=', 'ipam_addresses.vlan_record_id')
+                ->groupBy('scope_vlan')
+                ->groupBy('scope_group')
+                ->groupBy('scope_site');
+        }
 
         // An ignored address is deliberately out of the picture, so it cannot be
         // half of a conflict either. 127.0.0.1 on three devices is loopback, not
         // a three-way collision, and that is the whole reason the exclusions
         // exist: the report was burying real findings under them.
-        $query->where('ignored', false);
+        //
+        // Every column here carries its table: the vlan join puts two tables
+        // behind these names, and an unqualified one is an ambiguous-column
+        // error on the first query.
+        $query->where('ipam_addresses.ignored', false);
 
         if ($this->ignoreUnscoped) {
             // Placeable means having at least one of the two: an address with a
@@ -139,37 +177,47 @@ class DuplicateDetector
             // carried by three access points, a failover pair's whole public
             // /29) stayed invisible while the report said "nothing".
             $query->where(function ($inner) use ($vlanColumn): void {
-                $inner->where('site_id', '>', 0);
+                $inner->where('ipam_addresses.site_id', '>', 0);
 
                 if ($vlanColumn !== null) {
-                    $inner->orWhere('vlan_record_id', '>', 0);
+                    $inner->orWhere('ipam_addresses.vlan_record_id', '>', 0);
                 }
             });
         }
 
         if ($siteId !== null) {
-            $query->where('site_id', $siteId);
+            $query->where('ipam_addresses.site_id', $siteId);
         }
 
         if ($vlanColumn !== null && $vlanRecordId !== null) {
-            $query->where('vlan_record_id', $vlanRecordId);
+            $query->where('ipam_addresses.vlan_record_id', $vlanRecordId);
         }
 
         return $query;
     }
 
     /**
-     * One group: an address, the scope it clashes in, and where it appears.
+     * One finding, with the occurrences that make it up.
+     *
+     * A stretched vlan carries the same address at several sites, so when the
+     * scope is a group the occurrences come from every record of the group
+     * and the site is no part of the question.
      */
-    private function buildGroup(int $family, string $address, int $vlanRecordId, int $siteId): ?DuplicateGroup
+    private function buildGroup(int $family, string $address, int $vlanRecordId, int $siteId, int $vlanGroupId = 0): ?DuplicateGroup
     {
         $query = Address::query()
             ->where('family', $family)
-            ->where('address', $address)
-            ->where('site_id', $siteId);
+            ->where('address', $address);
 
-        if ($this->useVlanScope) {
-            $query->where('vlan_record_id', $vlanRecordId);
+        if ($vlanGroupId > 0) {
+            $records = Vlan::query()->where('vlan_group_id', $vlanGroupId)->pluck('vlan_record_id');
+            $query->whereIn('vlan_record_id', $records);
+        } else {
+            $query->where('site_id', $siteId);
+
+            if ($this->useVlanScope) {
+                $query->where('vlan_record_id', $vlanRecordId);
+            }
         }
 
         $occurrences = $query->orderBy('device_id')->orderBy('port_id')->get();
@@ -181,8 +229,9 @@ class DuplicateDetector
         $note = Duplicate::query()
             ->where('family', $family)
             ->where('address', $address)
-            ->where('site_id', $siteId)
-            ->when($this->useVlanScope, fn ($q) => $q->where('vlan_record_id', $vlanRecordId))
+            ->where('vlan_group_id', $vlanGroupId)
+            ->where('site_id', $vlanGroupId > 0 ? 0 : $siteId)
+            ->when($this->useVlanScope && $vlanGroupId === 0, fn ($q) => $q->where('vlan_record_id', $vlanRecordId))
             ->first();
 
         $group = new DuplicateGroup(
@@ -190,6 +239,7 @@ class DuplicateDetector
             address: $address,
             siteId: $siteId,
             vlanRecordId: $this->useVlanScope ? $vlanRecordId : null,
+            vlanGroupId: $vlanGroupId,
             occurrences: $occurrences,
             note: $note?->note,
             ignored: (bool) $note?->ignored,

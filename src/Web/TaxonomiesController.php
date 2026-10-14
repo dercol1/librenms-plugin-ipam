@@ -10,6 +10,7 @@ use Dercol1\LibrenmsIpam\Support\SchemaInstaller;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
@@ -48,13 +49,20 @@ class TaxonomiesController extends Controller
     /**
      * The three lists with the usage counts that decide what can be deleted.
      *
+     * Sorted the way the request asks: the headers cycle ascending, then
+     * descending, then back to the natural order, and the three lists follow
+     * the same choice so the page moves as one rather than as three
+     * unrelated tables.
+     *
      * @return array<string, mixed>
      */
     private function lists(): array
     {
-        $netOwners = NetworkOwner::query()->orderBy('name')->get();
-        $netFunctions = NetworkFunction::query()->orderBy('name')->get();
-        $vlanOwners = VlanOwner::query()->orderBy('name')->get();
+        [$order, $descending] = $this->requestedOrder();
+
+        $netOwners = $this->ordered(NetworkOwner::query()->orderBy('name')->get(), $order, $descending, 'net-owner');
+        $netFunctions = $this->ordered(NetworkFunction::query()->orderBy('name')->get(), $order, $descending, 'net-function');
+        $vlanOwners = $this->ordered(VlanOwner::query()->orderBy('name')->get(), $order, $descending, 'vlan-owner');
 
         return [
             'net-owner' => [
@@ -94,6 +102,69 @@ class TaxonomiesController extends Controller
     }
 
     /**
+     * The sort the headers asked for: a column and a direction, or the natural
+     * order when the cycle has come back around.
+     *
+     * @return array{0: string|null, 1: bool}
+     */
+    private function requestedOrder(): array
+    {
+        $order = (string) request('order_by');
+
+        $known = ['name', 'usage'];
+
+        if (! in_array($order, $known, true)) {
+            return [null, false];
+        }
+
+        return [$order, strtolower((string) request('order_direction', 'asc')) === 'desc'];
+    }
+
+    /**
+     * Sort one list's entries by the requested column, usages included: the
+     * usage counts are per entry, so they are attached before the sort.
+     *
+     * The bound is the union of the three models rather than the generic one:
+     * sorting reads $entry->name, and the generic Model has no such property,
+     * which is phpstan saying the bound has to promise what the body does.
+     *
+     * @template TModel of NetworkOwner|NetworkFunction|VlanOwner
+     *
+     * @param  Collection<int, TModel>  $entries
+     * @param  string  $taxonomy  the key the urls and the usage counts are built from
+     * @return Collection<int, TModel>
+     */
+    private function ordered(Collection $entries, ?string $order, bool $descending, string $taxonomy): Collection
+    {
+        if ($order === 'usage') {
+            return $entries->sortBy(
+                fn ($entry): int => array_sum($this->usageFor($taxonomy, (int) $this->entryKey($taxonomy, $entry))),
+                $descending ? SORT_DESC : SORT_ASC
+            )->values();
+        }
+
+        if ($descending) {
+            return $entries->sortByDesc(fn ($entry): string => (string) $entry->name)->values();
+        }
+
+        // natural order, and ascending name: the same thing here
+        return $entries->values();
+    }
+
+    /**
+     * The primary key of one entry, whichever list it is from.
+     */
+    private function entryKey(string $taxonomy, object $entry): int
+    {
+        return match ($taxonomy) {
+            'net-owner' => (int) $entry->net_owner_id,
+            'net-function' => (int) $entry->net_function_id,
+            'vlan-owner' => (int) $entry->vlan_owner_id,
+            default => 0,
+        };
+    }
+
+    /**
      * Add an entry to one of the lists.
      */
     public function store(Request $request, string $taxonomy): RedirectResponse
@@ -111,15 +182,25 @@ class TaxonomiesController extends Controller
             'description' => ['nullable', 'string', 'max:255'],
         ]);
 
-        // firstOrCreate rather than create: two people typing the same owner on
-        // the same afternoon should not end up with two entries whose dropdown
-        // then shows one thing twice
-        $model::query()->firstOrCreate(
-            ['name' => $data['name']],
-            ['description' => $data['description'] ?? null]
-        );
+        // firstOrCreate would answer "created" while handing back an existing
+        // entry and dropping the description the operator typed. The name is
+        // freed instead: an unused holder is absorbed, a used one is refused.
+        $release = $this->releaseName($taxonomy, $data['name'], 0);
 
-        return back()->with('success', __('ipam::ipam.created', ['what' => $data['name']]));
+        if ($release === 'taken') {
+            return back()->with('error', __('ipam::ipam.taxonomies.name_taken', ['name' => $data['name']]));
+        }
+
+        $model::query()->create([
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+        ]);
+
+        $message = $release === 'released'
+            ? __('ipam::ipam.taxonomies.name_released', ['name' => $data['name']])
+            : __('ipam::ipam.created', ['what' => $data['name']]);
+
+        return back()->with('success', $message);
     }
 
     public function update(Request $request, string $taxonomy, int $id): RedirectResponse
@@ -143,13 +224,79 @@ class TaxonomiesController extends Controller
             'description' => ['nullable', 'string', 'max:255'],
         ]);
 
+        // Names are unique per list, so a rename onto a taken name has to be
+        // answered here rather than by a 500 from the database constraint —
+        // the same lesson the sites page learned. An unused holder is a
+        // leftover from before the list had a page of its own, and the
+        // operator renaming onto it is saying the two are the same thing: it
+        // is absorbed. A used one is refused, because only the operator can
+        // decide whether the two really are.
+        $release = $this->releaseName($taxonomy, $data['name'], (int) $id);
+
+        if ($release === 'taken') {
+            return back()->with('error', __('ipam::ipam.taxonomies.name_taken', ['name' => $data['name']]));
+        }
+
         $entry->fill([
             'name' => $data['name'],
             'description' => $data['description'] ?? null,
         ]);
         $entry->save();
 
-        return back()->with('success', __('ipam::ipam.saved', ['what' => $data['name']]));
+        $message = $release === 'released'
+            ? __('ipam::ipam.taxonomies.name_released', ['name' => $data['name']])
+            : __('ipam::ipam.saved', ['what' => $data['name']]);
+
+        return back()->with('success', $message);
+    }
+
+    /**
+     * Free a name an operator wants for another entry of the same list.
+     *
+     * The same three states as a site name: free when nobody holds it,
+     * released when an entry nothing points at held it and was removed,
+     * taken when a used entry holds it and only the operator can decide.
+     */
+    private function releaseName(string $taxonomy, string $name, int $keepId): string
+    {
+        $model = $this->modelFor($taxonomy);
+
+        if ($model === null) {
+            return 'taken';
+        }
+
+        $holder = $model::query()
+            ->where('name', $name)
+            ->where($this->keyFor($taxonomy), '!=', $keepId)
+            ->first();
+
+        if ($holder === null) {
+            return 'free';
+        }
+
+        $id = (int) $holder->{$this->keyFor($taxonomy)};
+
+        if (array_sum($this->usageFor($taxonomy, $id)) === 0) {
+            $holder->delete();
+
+            return 'released';
+        }
+
+        return 'taken';
+    }
+
+    /**
+     * The primary key column of one list, the way rename and release both
+     * have to spell it.
+     */
+    private function keyFor(string $taxonomy): string
+    {
+        return match ($taxonomy) {
+            'net-owner' => 'net_owner_id',
+            'net-function' => 'net_function_id',
+            'vlan-owner' => 'vlan_owner_id',
+            default => 'id',
+        };
     }
 
     /**
@@ -211,6 +358,10 @@ class TaxonomiesController extends Controller
     /**
      * How many things would lose their classification if this entry went.
      *
+     * The keys are the short names the view turns into links and labels: the
+     * drill-down from a badge is "show me the blocks that carry this owner",
+     * and the page they land on is decided by exactly this key.
+     *
      * @return array<string, int>
      */
     private function usageFor(string $taxonomy, int $id): array
@@ -229,8 +380,8 @@ class TaxonomiesController extends Controller
     private function netOwnerUsage(int $id): array
     {
         return [
-            __('ipam::ipam.taxonomies.usage_blocks') => (int) DB::table('ipam_networks')->where('net_owner_id', $id)->count(),
-            __('ipam::ipam.taxonomies.usage_addresses') => (int) DB::table('ipam_addresses')->where('net_owner_id', $id)->count(),
+            'blocks' => (int) DB::table('ipam_networks')->where('net_owner_id', $id)->count(),
+            'addresses' => (int) DB::table('ipam_addresses')->where('net_owner_id', $id)->count(),
         ];
     }
 
@@ -240,8 +391,8 @@ class TaxonomiesController extends Controller
     private function netFunctionUsage(int $id): array
     {
         return [
-            __('ipam::ipam.taxonomies.usage_blocks') => (int) DB::table('ipam_networks')->where('net_function_id', $id)->count(),
-            __('ipam::ipam.taxonomies.usage_addresses') => (int) DB::table('ipam_addresses')->where('net_function_id', $id)->count(),
+            'blocks' => (int) DB::table('ipam_networks')->where('net_function_id', $id)->count(),
+            'addresses' => (int) DB::table('ipam_addresses')->where('net_function_id', $id)->count(),
         ];
     }
 
@@ -251,7 +402,7 @@ class TaxonomiesController extends Controller
     private function vlanOwnerUsage(int $id): array
     {
         return [
-            __('ipam::ipam.taxonomies.usage_vlans') => (int) DB::table('ipam_vlans')->where('vlan_owner_id', $id)->count(),
+            'vlans' => (int) DB::table('ipam_vlans')->where('vlan_owner_id', $id)->count(),
         ];
     }
 
@@ -266,10 +417,23 @@ class TaxonomiesController extends Controller
 
         foreach ($usage as $what => $count) {
             if ($count > 0) {
-                $parts[] = number_format($count) . ' ' . $what;
+                $parts[] = number_format($count) . ' ' . __($this->usageLabelKey($what));
             }
         }
 
         return implode(' + ', $parts);
+    }
+
+    /**
+     * The lang key behind a usage word, shared by the message and the badges.
+     */
+    private function usageLabelKey(string $what): string
+    {
+        return match ($what) {
+            'blocks' => 'ipam::ipam.taxonomies.usage_blocks',
+            'addresses' => 'ipam::ipam.taxonomies.usage_addresses',
+            'vlans' => 'ipam::ipam.taxonomies.usage_vlans',
+            default => $what,
+        };
     }
 }

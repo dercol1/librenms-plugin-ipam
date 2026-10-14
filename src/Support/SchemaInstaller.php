@@ -46,6 +46,7 @@ class SchemaInstaller
             'ipam_vlan_owners',
             'ipam_networks',
             'ipam_vlans',
+            'ipam_vlan_groups',
             'ipam_vlan_locations',
             'ipam_vlan_names',
             'ipam_addresses',
@@ -162,6 +163,27 @@ class SchemaInstaller
             'ipam_vlans' => [
                 'ignored' => function (Blueprint $t): void {
                     $t->boolean('ignored')->default(false)->index('ipam_vlans_ignored_index');
+                },
+                'vlan_group_id' => function (Blueprint $t): void {
+                    $t->unsignedInteger('vlan_group_id')->default(0)->index('ipam_vlans_group_index');
+                },
+            ],
+            'ipam_duplicates' => [
+                'vlan_group_id' => function (Blueprint $t): void {
+                    $t->unsignedInteger('vlan_group_id')->default(0)->index('ipam_duplicates_group_index');
+
+                    // The identity of a verdict gains the group, so the old
+                    // four column unique has to become the five column one, or
+                    // the same address duplicated inside two different
+                    // stretched vlans could not carry a verdict each. This
+                    // closure runs only when the column is being added, which
+                    // is only on an upgrade: a fresh table is created with the
+                    // new unique already in place.
+                    $t->dropUnique('ipam_duplicates_scope_unique');
+                    $t->unique(
+                        ['family', 'address', 'vlan_record_id', 'site_id', 'vlan_group_id'],
+                        'ipam_duplicates_scope_unique'
+                    );
                 },
             ],
         ];
@@ -307,7 +329,11 @@ class SchemaInstaller
             ],
             'ipam_vlans' => [
                 'vlan_record_id', 'vlan_id', 'vlan_domain', 'site_id', 'vlan_owner_id',
-                'name', 'description', 'auto_created', 'ignored', 'created_at', 'updated_at',
+                'name', 'description', 'auto_created', 'ignored', 'vlan_group_id',
+                'created_at', 'updated_at',
+            ],
+            'ipam_vlan_groups' => [
+                'vlan_group_id', 'name', 'description', 'created_at', 'updated_at',
             ],
             'ipam_vlan_locations' => [
                 'vlan_location_id', 'vlan_record_id', 'location_id', 'created_at', 'updated_at',
@@ -324,7 +350,7 @@ class SchemaInstaller
             ],
             'ipam_duplicates' => [
                 'duplicate_id', 'family', 'address', 'vlan_record_id', 'site_id',
-                'ignored', 'note', 'updated_by', 'created_at', 'updated_at',
+                'vlan_group_id', 'ignored', 'note', 'updated_by', 'created_at', 'updated_at',
             ],
             default => [],
         };
@@ -382,6 +408,7 @@ class SchemaInstaller
             'ipam_vlan_owners' => self::vlanOwners(...),
             'ipam_networks' => self::networks(...),
             'ipam_vlans' => self::vlans(...),
+            'ipam_vlan_groups' => self::vlanGroups(...),
             'ipam_vlan_locations' => self::vlanLocations(...),
             'ipam_vlan_names' => self::vlanNames(...),
             'ipam_addresses' => self::addresses(...),
@@ -535,6 +562,13 @@ class SchemaInstaller
         );
         $table->index('site_id', 'ipam_vlans_site_id_index');
         $table->index('vlan_owner_id', 'ipam_vlans_vlan_owner_id_index');
+
+        // 0 = a vlan of one site. Above it: the record belongs with its
+        // siblings at the other sites to one broadcast domain carried across
+        // them at layer 2, and this is the id of that domain. See the builder
+        // below for what the group itself is.
+        $table->unsignedInteger('vlan_group_id')->default(0);
+        $table->index('vlan_group_id', 'ipam_vlans_group_index');
     }
 
     /**
@@ -655,6 +689,14 @@ class SchemaInstaller
      * The duplicate list itself is always recomputed from ipam_addresses, so a
      * table that only holds notes can never go stale and hide a real conflict.
      */
+    private static function vlanGroups(Blueprint $table): void
+    {
+        $table->increments('vlan_group_id');
+        $table->string('name', 128)->nullable();
+        $table->text('description')->nullable();
+        $table->timestamps();
+    }
+
     private static function duplicates(Blueprint $table): void
     {
         $table->increments('duplicate_id');
@@ -662,6 +704,9 @@ class SchemaInstaller
         $table->string('address', 45);
         $table->unsignedInteger('vlan_record_id')->default(0);
         $table->unsignedInteger('site_id')->default(0);
+        // a verdict on a stretched vlan's conflict: the identity of the vlan
+        // side is the group, not any one record, so the annotation carries it
+        $table->unsignedInteger('vlan_group_id')->default(0);
 
         $table->boolean('ignored')->default(false);
         $table->string('note', 255)->nullable();
@@ -669,7 +714,7 @@ class SchemaInstaller
         $table->timestamps();
 
         $table->unique(
-            ['family', 'address', 'vlan_record_id', 'site_id'],
+            ['family', 'address', 'vlan_record_id', 'site_id', 'vlan_group_id'],
             'ipam_duplicates_scope_unique'
         );
     }

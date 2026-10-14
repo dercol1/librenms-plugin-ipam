@@ -274,19 +274,62 @@ class SiteService
      * site is not a problem. What is not allowed is losing the location, so the
      * check is on the row existing rather than on the site.
      */
-    public function moveLocation(int $locationId, int $siteId): bool
+    /**
+     * Move one location under a different site.
+     *
+     * Returns what happened, because the two outcomes the caller cares about
+     * are different: whether the move happened at all, and whether the site
+     * it left behind emptied out. A site that loses its last location and
+     * holds nothing else is residue — a name with nothing under it — and
+     * those leftovers are exactly what later collides with a rename, so the
+     * site goes now, while the operator is watching it empty out, rather than
+     * waiting to ambush a rename later.
+     *
+     * @return array{moved: bool, emptied: ?Site}
+     */
+    public function moveLocation(int $locationId, int $siteId): array
     {
-        if (! Location::query()->whereKey($locationId)->exists()) {
-            return false;
+        $location = Location::query()->find($locationId);
+
+        if ($location === null) {
+            return ['moved' => false, 'emptied' => null];
         }
 
         if ($siteId !== 0 && ! Site::query()->whereKey($siteId)->exists()) {
-            return false;
+            return ['moved' => false, 'emptied' => null];
         }
+
+        $leftBehind = (int) $location->site_id !== 0 && (int) $location->site_id !== $siteId
+            ? Site::query()->find((int) $location->site_id)
+            : null;
 
         Location::query()->whereKey($locationId)->update(['site_id' => $siteId]);
 
-        return true;
+        $emptied = null;
+
+        if ($leftBehind !== null && $this->isEmpty($leftBehind)) {
+            $leftBehind->delete();
+            $emptied = $leftBehind;
+        }
+
+        return ['moved' => true, 'emptied' => $emptied];
+    }
+
+    /**
+     * A site with nothing behind it: no location, no vlan, no address, no
+     * block, no collision note. A name and a row.
+     *
+     * This is what a merge or a move leaves behind, and what the "empty sites"
+     * panel offers for deletion. The duplicates are counted too: a note left
+     * on a collision is worth keeping only with the data it describes.
+     */
+    public function isEmpty(Site $site): bool
+    {
+        return ! Location::query()->where('site_id', $site->site_id)->exists()
+            && ! DB::table('ipam_vlans')->where('site_id', $site->site_id)->exists()
+            && ! DB::table('ipam_addresses')->where('site_id', $site->site_id)->exists()
+            && ! DB::table('ipam_networks')->where('site_id', $site->site_id)->exists()
+            && ! DB::table('ipam_duplicates')->where('site_id', $site->site_id)->exists();
     }
 
     /**
@@ -305,9 +348,52 @@ class SiteService
             ->whereDoesntHave('addresses')
             ->whereDoesntHave('networks')
             ->orderBy('name')
-            ->get();
+            ->get()
+            ->filter(fn (Site $site): bool => $this->isEmpty($site))
+            ->values();
     }
 
+    /**
+     * Free a name an operator wants for another site.
+     *
+     * Returns one of three states, because they mean different things:
+     *
+     *   free      nobody holds the name, the rename can just happen
+     *   released  an empty site held it and was removed. That site was residue
+     *             — a merge or a move left the name behind with nothing
+     *             under it — and the operator renaming another site onto it
+     *             is saying the two are one place. Absorbing it is what the
+     *             operator would have had to do by hand next.
+     *   taken     a site with data holds it. The two are not necessarily the
+     *             same place at all, and only the operator can decide: merge
+     *             them on the Sites page first, or pick another name.
+     *
+     * Without this, renaming onto a taken name was a 500 from the database
+     * unique constraint, which tells the operator nothing except that
+     * something broke.
+     */
+    public function releaseName(string $name, int $keepSiteId): string
+    {
+        $holder = Site::query()
+            ->where('name', $name)
+            // the site being renamed keeps its own name, it is not a collision
+            ->when($keepSiteId !== 0, fn ($query) => $query->where('site_id', '!=', $keepSiteId))
+            ->first();
+
+        if ($holder === null) {
+            return 'free';
+        }
+
+        if ($this->isEmpty($holder)) {
+            $holder->delete();
+
+            return 'released';
+        }
+
+        return 'taken';
+    }
+
+    /**
     /**
      * Words in a location string worth grouping on.
      *

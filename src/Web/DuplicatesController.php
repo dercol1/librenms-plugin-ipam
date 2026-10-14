@@ -9,6 +9,7 @@ use Dercol1\LibrenmsIpam\Models\Address;
 use Dercol1\LibrenmsIpam\Models\Duplicate;
 use Dercol1\LibrenmsIpam\Models\Site;
 use Dercol1\LibrenmsIpam\Models\Vlan;
+use Dercol1\LibrenmsIpam\Models\VlanGroup;
 use Dercol1\LibrenmsIpam\Settings;
 use Dercol1\LibrenmsIpam\Support\SchemaInstaller;
 use Illuminate\Http\JsonResponse;
@@ -59,7 +60,7 @@ class DuplicatesController extends Controller
         }
 
         // one query each rather than one per group inside the view
-        [$vlanLabels, $siteLabels] = $this->labels($groups);
+        [$vlanLabels, $siteLabels, $domainLabels] = $this->labels($groups);
         $directory = SiteDirectory::load();
 
         return view('ipam::duplicates', [
@@ -70,6 +71,7 @@ class DuplicatesController extends Controller
             'options' => $this->options(),
             'vlanLabels' => $vlanLabels,
             'siteLabels' => $siteLabels,
+            'domainLabels' => $domainLabels,
             'directory' => $directory,
             'useVlanScope' => $settings->useVlanScope(),
             'counts' => [
@@ -116,6 +118,7 @@ class DuplicatesController extends Controller
                 address: $group->address,
                 siteId: $group->siteId,
                 vlanRecordId: $group->vlanRecordId,
+                vlanGroupId: $group->vlanGroupId,
                 occurrences: $visible,
                 note: $group->note,
                 ignored: $group->ignored,
@@ -129,12 +132,17 @@ class DuplicatesController extends Controller
      * Vlan and site names for the groups on screen, in two queries.
      *
      * @param  list<DuplicateGroup>  $groups
-     * @return array{0: array<int, string>, 1: array<int, string>}
+     * @return array{0: array<int, string>, 1: array<int, string>, 2: array<int, string>}
      */
     private function labels(array $groups): array
     {
         $vlanIds = array_values(array_filter(array_unique(array_map(
             fn (DuplicateGroup $g): ?int => $g->vlanRecordId,
+            $groups
+        ))));
+
+        $groupIds = array_values(array_filter(array_unique(array_map(
+            fn (DuplicateGroup $g): int => $g->vlanGroupId,
             $groups
         ))));
 
@@ -149,11 +157,29 @@ class DuplicatesController extends Controller
                 ->mapWithKeys(fn (Vlan $v): array => [$v->vlan_record_id => $v->label()])
                 ->all();
 
+        // a stretched vlan's label says where it stretches to, which is the
+        // question the report's vlan column answers
+        $domainLabels = [];
+
+        foreach ($groupIds as $groupId) {
+            $domain = VlanGroup::query()->with('vlans.site')->find($groupId);
+
+            if ($domain !== null) {
+                $domainLabels[$groupId] = sprintf(
+                    '%s (%s)',
+                    $domain->name ?? __('ipam::ipam.vlans.stretched'),
+                    implode(' + ', $domain->vlans->map(
+                        fn (Vlan $v): string => (string) ($v->site->name ?? '?')
+                    )->all()),
+                );
+            }
+        }
+
         $sites = $siteIds === []
             ? []
             : Site::query()->whereIn('site_id', $siteIds)->pluck('name', 'site_id')->all();
 
-        return [$vlans, $sites];
+        return [$vlans, $sites, $domainLabels];
     }
 
     /**
@@ -172,6 +198,7 @@ class DuplicatesController extends Controller
             'address' => ['required', 'string', 'max:45'],
             'site_id' => ['nullable', 'integer'],
             'vlan_record_id' => ['nullable', 'integer'],
+            'vlan_group_id' => ['nullable', 'integer'],
             'ignored' => ['nullable', 'boolean'],
             'note' => ['nullable', 'string', 'max:255'],
         ]);
@@ -182,6 +209,9 @@ class DuplicatesController extends Controller
                 'address' => $data['address'],
                 'site_id' => (int) ($data['site_id'] ?? 0),
                 'vlan_record_id' => (int) ($data['vlan_record_id'] ?? 0),
+                // the identity of a stretched vlan's verdict is the domain, so
+                // the annotation stores the group and the report reads it back
+                'vlan_group_id' => (int) ($data['vlan_group_id'] ?? 0),
             ],
             [
                 'ignored' => $request->boolean('ignored'),

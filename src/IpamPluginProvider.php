@@ -139,9 +139,13 @@ class IpamPluginProvider extends ServiceProvider
                     Route::put('addresses/{addressId}', [AddressesController::class, 'update'])->name('addresses.update');
                     Route::post('addresses', [AddressesController::class, 'store'])->name('addresses.store');
                     Route::post('addresses/block', [AddressesController::class, 'applyToBlock'])->name('addresses.block');
+                    Route::post('addresses/bulk', [AddressesController::class, 'bulk'])->name('addresses.bulk');
 
                     Route::post('vlans/{vlanRecordId}', [VlansController::class, 'update'])->name('vlans.update');
                     Route::post('vlans', [VlansController::class, 'store'])->name('vlans.store');
+                    Route::post('vlans/{vlanRecordId}/link', [VlansController::class, 'link'])->name('vlans.link');
+                    Route::post('vlans/{vlanRecordId}/unlink', [VlansController::class, 'unlink'])->name('vlans.unlink');
+                    Route::post('vlans/{vlanRecordId}/describe', [VlansController::class, 'describe'])->name('vlans.describe');
 
                     Route::post('duplicates/annotate', [DuplicatesController::class, 'annotate'])->name('duplicates.annotate');
 

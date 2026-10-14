@@ -6,6 +6,9 @@
     <div class="container-fluid">
         @include('ipam::partials.nav', ['current' => 'sites'])
 
+        {{-- what the last action answered, and what validation refused: without this a refused form looks exactly like a working one --}}
+        @include('ipam::partials.notices')
+
         @include('ipam::partials.stats', ['stats' => [
             [
                 'label' => __('ipam::ipam.sites.title'),

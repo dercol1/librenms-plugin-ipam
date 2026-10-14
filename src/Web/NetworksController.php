@@ -5,6 +5,7 @@ namespace Dercol1\LibrenmsIpam\Web;
 use Dercol1\LibrenmsIpam\Models\Network;
 use Dercol1\LibrenmsIpam\Support\Cidr;
 use Dercol1\LibrenmsIpam\Support\SchemaInstaller;
+use Dercol1\LibrenmsIpam\Support\ScopeRules;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -113,14 +114,19 @@ class NetworksController extends Controller
             return back()->with('error', __('ipam::ipam.not_installed'));
         }
 
-        $data = $request->validate([
+        // 0 is "inherit from the block above", and every "--" option in the
+        // form sends exactly it: the rules are built so it passes, or an
+        // operator editing one field and leaving the others alone would have
+        // the whole submit refused with nothing shown for it
+        $data = $request->validate(ScopeRules::make([
+            'site_id' => ['ipam_sites', 'site_id'],
+            'net_owner_id' => ['ipam_net_owners', 'net_owner_id'],
+            'net_function_id' => ['ipam_net_functions', 'net_function_id'],
+        ], $request) + [
             'network_id' => ['nullable', 'integer', 'exists:ipam_networks,network_id'],
             'cidr' => ['required_without:network_id', 'string', 'max:64'],
             'description' => ['nullable', 'string', 'max:255'],
-            'site_id' => ['nullable', 'integer', 'exists:ipam_sites,site_id'],
             'vlan_id' => ['nullable', 'integer', 'min:1', 'max:4094'],
-            'net_owner_id' => ['nullable', 'integer', 'exists:ipam_net_owners,net_owner_id'],
-            'net_function_id' => ['nullable', 'integer', 'exists:ipam_net_functions,net_function_id'],
             'ignored' => ['nullable', 'boolean'],
         ]);
 
@@ -194,13 +200,16 @@ class NetworksController extends Controller
     {
         $this->authorizeManage();
 
-        $data = $request->validate([
+        // 0 is "inherit" on the same terms as the row edit: the "--" options
+        // of this form send it for every field the operator left alone
+        $data = $request->validate(ScopeRules::make([
+            'site_id' => ['ipam_sites', 'site_id'],
+            'net_owner_id' => ['ipam_net_owners', 'net_owner_id'],
+            'net_function_id' => ['ipam_net_functions', 'net_function_id'],
+        ], $request) + [
             'cidr' => ['required', 'string', 'max:64'],
             'description' => ['nullable', 'string', 'max:255'],
-            'site_id' => ['nullable', 'integer', 'exists:ipam_sites,site_id'],
             'vlan_id' => ['nullable', 'integer', 'min:1', 'max:4094'],
-            'net_owner_id' => ['nullable', 'integer', 'exists:ipam_net_owners,net_owner_id'],
-            'net_function_id' => ['nullable', 'integer', 'exists:ipam_net_functions,net_function_id'],
             'ignored' => ['nullable', 'boolean'],
         ]);
 

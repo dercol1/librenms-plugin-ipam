@@ -19,6 +19,7 @@ class DuplicateGroup
      * @param  string  $address  the duplicated address, in uncompressed form
      * @param  int  $siteId  the site both occurrences claim to be in, 0 unknown
      * @param  int|null  $vlanRecordId  the vlan, or null when vlan scoping is off
+     * @param  int  $vlanGroupId  the layer 2 domain when the vlan is stretched across sites, 0 otherwise
      * @param  Collection<int, Address>  $occurrences
      */
     public function __construct(
@@ -26,6 +27,7 @@ class DuplicateGroup
         public readonly string $address,
         public readonly int $siteId,
         public readonly ?int $vlanRecordId,
+        public readonly int $vlanGroupId,
         public readonly mixed $occurrences,
         public readonly ?string $note = null,
         public readonly bool $ignored = false,
@@ -95,6 +97,7 @@ class DuplicateGroup
             'address' => $this->address,
             'site_id' => $this->siteId,
             'vlan_record_id' => $this->vlanRecordId,
+            'vlan_group_id' => $this->vlanGroupId,
             'occurrences' => $this->count(),
             'devices' => $this->deviceCount(),
             'crosses_devices' => $this->crossesDevices(),

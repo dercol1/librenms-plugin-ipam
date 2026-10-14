@@ -5,6 +5,9 @@
 @section('content')
     <div class="container-fluid">
         @include('ipam::partials.nav', ['current' => 'vlans'])
+
+        {{-- what the last action answered, and what validation refused: without this a refused form looks exactly like a working one --}}
+        @include('ipam::partials.notices')
         @include('ipam::partials.options')
         @include('ipam::partials.fill')
 
@@ -40,7 +43,7 @@
 
             <div class="tw:flex tw:flex-wrap tw:items-end tw:gap-2 tw:mb-3">
                 <form method="get" class="tw:flex tw:flex-wrap tw:items-end tw:gap-2 tw:m-0">
-                    @foreach (request()->except(['q', 'page']) as $key => $value)
+                    @foreach (request()->except(['q', 'page', 'show_known']) as $key => $value)
                         @if (is_scalar($value) && $value !== '')
                             <input type="hidden" name="{{ $key }}" value="{{ $value }}">
                         @endif
@@ -57,6 +60,15 @@
                             <option value="">{{ __('ipam::ipam.networks.all') }}</option>
                             <option value="yes" @selected(request('described') === 'yes')>{{ __('ipam::ipam.networks.only_described') }}</option>
                             <option value="no" @selected(request('described') === 'no')>{{ __('ipam::ipam.networks.only_undescribed') }}</option>
+                        </select>
+                    </div>
+                    <div class="form-group tw:mb-0">
+                        <label class="sr-only" for="vlan-owner">{{ __('ipam::ipam.vlans.owner') }}</label>
+                        <select name="owner_id" id="vlan-owner" class="form-control form-control-sm" onchange="this.form.submit()">
+                            <option value="">{{ __('ipam::ipam.vlans.owner') }}: {{ __('ipam::ipam.networks.all') }}</option>
+                            @foreach ($options['owners'] as $id => $name)
+                                <option value="{{ $id }}" @selected((string) request('owner_id') === (string) $id)>{{ $name }}</option>
+                            @endforeach
                         </select>
                     </div>
                     <div class="form-check tw:mb-0 tw:mr-2">
@@ -79,12 +91,12 @@
                 <table class="table table-sm table-hover table-striped">
                     <thead>
                     <tr>
-                        <th class="text-center" style="width: 5rem;">{{ __('ipam::ipam.vlans.id') }}</th>
-                        <th>{{ __('ipam::ipam.vlans.site') }}</th>
+                        <th class="text-center" style="width: 5rem;">@include('ipam::partials.sortable', ['column' => 'vlan', 'label' => __('ipam::ipam.vlans.id')])</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'site', 'label' => __('ipam::ipam.vlans.site')])</th>
                         <th>{{ __('ipam::ipam.vlans.name') }}</th>
-                        <th>{{ __('ipam::ipam.vlans.owner') }}</th>
+                        <th>@include('ipam::partials.sortable', ['column' => 'owner', 'label' => __('ipam::ipam.vlans.owner')])</th>
                         <th>{{ __('ipam::ipam.vlans.description') }}</th>
-                        <th class="text-right">{{ __('ipam::ipam.vlans.addresses') }}</th>
+                        <th class="text-right">@include('ipam::partials.sortable', ['column' => 'addresses', 'label' => __('ipam::ipam.vlans.addresses')])</th>
                         @can('ipam.manage')
                             <th></th>
                         @endcan
@@ -96,6 +108,14 @@
                         <tr>
                             <td class="text-center">
                                 <span class="tw:font-mono tw:text-base tw:font-semibold">{{ $vlan->vlan_id }}</span>
+                                @if ($vlan->vlan_group_id > 0)
+                                    <div>
+                                        <span class="label label-info" title="{{ $vlan->group?->description ?? __('ipam::ipam.vlans.stretched_hint') }}">
+                                            <i class="fa fa-arrows-left-right-to-line" aria-hidden="true"></i>
+                                            {{ __('ipam::ipam.vlans.stretched') }}
+                                        </span>
+                                    </div>
+                                @endif
                                 @if ($vlan->ignored)
                                     <div><span class="label label-default">{{ __('ipam::ipam.hidden') }}</span></div>
                                 @elseif ($vlan->vlan_domain > 1)
@@ -142,6 +162,7 @@
                                                 <label>{{ __('ipam::ipam.vlans.site') }}</label>
                                                 <select name="site_id" class="form-control form-control-sm"
                                                         data-fill="ipam-options-sites" data-selected="{{ $vlan->site_id }}">
+                                                    <option value="0">-- {{ __('ipam::ipam.sites.no_site') }}</option>
                                                 </select>
                                             </div>
                                             <div class="form-group col-md-2">
@@ -179,6 +200,75 @@
 
                                         <button type="submit" class="btn btn-primary btn-sm">{{ __('ipam::ipam.vlans.save') }}</button>
                                     </form>
+
+                                    {{-- one broadcast domain across sites: the operator decides
+                                         which sibling records are really this same vlan, and the
+                                         group the decision lands on is what the collision rule
+                                         reads. No device reports layer 2 topology, so this is
+                                         never offered as a guess --}}
+                                    <hr>
+                                    <strong><i class="fa fa-arrows-left-right-to-line" aria-hidden="true"></i> {{ __('ipam::ipam.vlans.link_title') }}</strong>
+                                    <p class="text-muted small">{{ __('ipam::ipam.vlans.link_intro') }}</p>
+
+                                    @if (($linkCandidates[$vlan->vlan_record_id] ?? []) !== [] || $vlan->vlan_group_id > 0)
+                                        @if ($vlan->vlan_group_id > 0)
+                                            <p class="tw:mb-1">
+                                                <span class="label label-info">{{ __('ipam::ipam.vlans.stretched') }}</span>
+                                                <span class="tw:ml-2">{{ $vlan->group?->name }}</span>
+                                                @if ($vlan->group?->description)
+                                                    <span class="text-muted tw:text-sm">— {{ $vlan->group->description }}</span>
+                                                @endif
+                                            </p>
+                                            <p class="tw:mb-2">
+                                                {{ collect($vlan->group->vlans)->map(fn ($v) => $v->site?->name ?? '?')->implode(' + ') }}
+                                            </p>
+
+                                            <div class="tw:flex tw:flex-wrap tw:items-end tw:gap-2">
+                                                <form method="post"
+                                                      action="{{ route('ipam.vlans.describe', $vlan->vlan_record_id) }}"
+                                                      class="tw:flex tw:items-end tw:gap-2 tw:m-0" style="flex: 1;">
+                                                    @csrf
+                                                    <div class="form-group tw:mb-0" style="flex: 1;">
+                                                        <label class="sr-only">{{ __('ipam::ipam.vlans.group_description') }}</label>
+                                                        <input type="text" name="description" class="form-control form-control-sm"
+                                                               value="{{ $vlan->group->description }}" maxlength="1000"
+                                                               placeholder="{{ __('ipam::ipam.vlans.link_note') }}">
+                                                    </div>
+                                                    <button type="submit" class="btn btn-default btn-sm">{{ __('ipam::ipam.vlans.save_description') }}</button>
+                                                </form>
+                                                <form method="post" action="{{ route('ipam.vlans.unlink', $vlan->vlan_record_id) }}" class="tw:m-0">
+                                                    @csrf
+                                                    <button type="submit" class="btn btn-danger btn-sm">{{ __('ipam::ipam.vlans.unlink') }}</button>
+                                                </form>
+                                            </div>
+                                        @endif
+
+                                        @if (($linkCandidates[$vlan->vlan_record_id] ?? []) !== [])
+                                            <form method="post" action="{{ route('ipam.vlans.link', $vlan->vlan_record_id) }}" class="tw:mt-2">
+                                                @csrf
+                                                <label class="tw:block tw:text-xs tw:uppercase tw:tracking-wide tw:text-gray-500">{{ __('ipam::ipam.vlans.link_with') }}</label>
+                                                @foreach ($linkCandidates[$vlan->vlan_record_id] as $candidate)
+                                                    <label class="form-check tw:mb-1">
+                                                        <input type="checkbox" name="with[]" value="{{ $candidate['id'] }}">
+                                                        {{ __('ipam::ipam.vlans.id') }} {{ $vlan->vlan_id }} @ {{ $candidate['site'] }}
+                                                    </label>
+                                                @endforeach
+                                                <div class="tw:flex tw:items-end tw:gap-2 tw:mt-2">
+                                                    <div class="form-group tw:mb-0" style="flex: 1;">
+                                                        <input type="text" name="description" class="form-control form-control-sm"
+                                                               maxlength="1000" placeholder="{{ __('ipam::ipam.vlans.link_note') }}">
+                                                    </div>
+                                                    <button type="submit" class="btn btn-default btn-sm">
+                                                        {{ __('ipam::ipam.vlans.link_go') }}
+                                                    </button>
+                                                </div>
+                                            </form>
+                                        @endif
+                                    @else
+                                        <p class="text-muted small tw:mb-0">
+                                            {{ __('ipam::ipam.vlans.link_none') }}
+                                        </p>
+                                    @endif
                                 </td>
                             </tr>
                         @endcan

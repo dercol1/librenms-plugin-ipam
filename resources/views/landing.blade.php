@@ -11,6 +11,7 @@
     button stays cheap even on a large install.
 --}}
 <div class="container-fluid">
+    @include('ipam::partials.notices')
     <div class="row">
         <div class="col-md-12">
             <div class="panel panel-default">

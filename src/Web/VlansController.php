@@ -6,6 +6,8 @@ use Dercol1\LibrenmsIpam\Models\Site;
 use Dercol1\LibrenmsIpam\Models\Vlan;
 use Dercol1\LibrenmsIpam\Models\VlanOwner;
 use Dercol1\LibrenmsIpam\Support\SchemaInstaller;
+use Dercol1\LibrenmsIpam\Support\ScopeRules;
+use Dercol1\LibrenmsIpam\Vlans\VlanLinker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -35,7 +37,7 @@ class VlansController extends Controller
         }
 
         $query = Vlan::query()
-            ->with(['owner', 'names', 'locations.location'])
+            ->with(['owner', 'names', 'locations.location', 'group.vlans.site'])
             ->withCount('addresses')
             // room count without loading the rows, for the site column
             ->withCount('locations')
@@ -71,6 +73,23 @@ class VlansController extends Controller
                 : $query->where('vlan_owner_id', 0)->whereNull('description');
         }
 
+        // the sort the headers asked for, on the same whitelist terms as the
+        // other lists: a column from the request is looked up, never executed
+        $sortable = [
+            'vlan' => 'vlan_id',
+            'site' => 'site_id',
+            'owner' => 'vlan_owner_id',
+            'addresses' => 'addresses_count',
+        ];
+
+        $requested = (string) $request->input('order_by');
+
+        if (isset($sortable[$requested]) && $request->filled('order_by')) {
+            $direction = strtolower((string) $request->input('order_direction', 'asc')) === 'desc' ? 'desc' : 'asc';
+
+            $query->reOrder()->orderBy($sortable[$requested], $direction);
+        }
+
         if ($request->wantsJson()) {
             return response()->json([
                 'data' => $query->limit(500)->get()->map(fn (Vlan $v): array => $this->row($v))->all(),
@@ -78,17 +97,80 @@ class VlansController extends Controller
         }
 
         $directory = SiteDirectory::load();
+        $page = $query->paginate(50)->withQueryString();
 
         return view('ipam::vlans', [
             'title' => __('ipam::ipam.page_titles.vlans'),
-            'vlans' => $query->paginate(50)->withQueryString(),
+            'vlans' => $page,
             'options' => [
                 'sites' => $directory->options(),
                 'owners' => VlanOwner::query()->orderBy('name')->pluck('name', 'vlan_owner_id'),
             ],
             'directory' => $directory,
+            // the records that could be joined into one domain, keyed by the
+            // record they would be joined to: same vlan id and domain, other
+            // site, the set the operator picks from when saying "stretched"
+            'linkCandidates' => $this->linkCandidates($page->getCollection()->all()),
             'summary' => $this->summary(),
         ]);
+    }
+
+    /**
+     * The sibling records worth offering, keyed by record id.
+     *
+     * One query for the whole page, not one per row: the siblings of every
+     * on-screen record are fetched together and grouped in memory. Only the
+     * records already on screen are keyed: a vlan stretched to a site whose
+     * record is on another page gets linked from its own row, which is where
+     * the operator will be looking at it anyway.
+     *
+     * @param  list<Vlan>  $records
+     * @return array<int, list<array{id: int, site: string}>>|null
+     */
+    private function linkCandidates(array $records): ?array
+    {
+        if ($records === []) {
+            return null;
+        }
+
+        $scope = [];
+
+        foreach ($records as $record) {
+            $scope[$record->vlan_id . '-' . $record->vlan_domain][] = (int) $record->vlan_record_id;
+        }
+
+        // every record sharing a vlan id and domain with any on-screen one,
+        // which is the whole set the link could ever join
+        $siblings = Vlan::query()
+            ->with('site')
+            ->where(function ($query) use ($scope): void {
+                foreach ($scope as $key => $ids) {
+                    [$vlanId, $domain] = explode('-', $key);
+
+                    $query->orWhere(function ($inner) use ($vlanId, $domain): void {
+                        $inner->where('vlan_id', (int) $vlanId)->where('vlan_domain', (int) $domain);
+                    });
+                }
+            })
+            ->get();
+
+        $candidates = [];
+
+        foreach ($records as $record) {
+            $candidates[(int) $record->vlan_record_id] = $siblings
+                ->filter(fn (Vlan $other): bool => $other->vlan_id === $record->vlan_id
+                    && $other->vlan_domain === $record->vlan_domain
+                    && $other->vlan_record_id !== $record->vlan_record_id
+                    && $other->site_id !== $record->site_id)
+                ->map(fn (Vlan $other): array => [
+                    'id' => (int) $other->vlan_record_id,
+                    'site' => (string) ($other->site->name ?? '?'),
+                ])
+                ->values()
+                ->all();
+        }
+
+        return $candidates;
     }
 
     /**
@@ -100,11 +182,15 @@ class VlansController extends Controller
 
         $vlan = Vlan::findOrFail($vlanRecordId);
 
-        $data = $request->validate([
+        // 0 is "no site"/"no owner": the "--" options send it, and an
+        // unassigned vlan keeps being unassigned unless the operator picks
+        // a site, rather than silently adopting the first one in the list
+        $data = $request->validate(ScopeRules::make([
+            'site_id' => ['ipam_sites', 'site_id'],
+            'vlan_owner_id' => ['ipam_vlan_owners', 'vlan_owner_id'],
+        ], $request) + [
             'name' => ['nullable', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:1000'],
-            'site_id' => ['nullable', 'integer', 'exists:ipam_sites,site_id'],
-            'vlan_owner_id' => ['nullable', 'integer', 'exists:ipam_vlan_owners,vlan_owner_id'],
             'ignored' => ['nullable', 'boolean'],
         ]);
 
@@ -138,11 +224,14 @@ class VlansController extends Controller
     {
         $this->authorizeManage();
 
-        $data = $request->validate([
+        // a vlan has to name a site when an operator writes it down; its
+        // owner can stay unset, and the "--" option sends 0 for exactly that
+        $data = $request->validate(ScopeRules::make([
+            'vlan_owner_id' => ['ipam_vlan_owners', 'vlan_owner_id'],
+        ], $request) + [
             'vlan_id' => ['required', 'integer', 'min:1', 'max:4094'],
             'vlan_domain' => ['nullable', 'integer', 'min:1'],
-            'site_id' => ['required', 'integer', 'exists:ipam_sites,site_id'],
-            'vlan_owner_id' => ['nullable', 'integer', 'exists:ipam_vlan_owners,vlan_owner_id'],
+            'site_id' => ['required', 'integer', 'min:1', 'exists:ipam_sites,site_id'],
             'name' => ['nullable', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:1000'],
         ]);
@@ -173,6 +262,76 @@ class VlansController extends Controller
         ]);
 
         return back()->with('success', __('ipam::ipam.created', ['what' => "vlan $vlanId"]));
+    }
+
+    /**
+     * Mark records as one broadcast domain carried across sites.
+     *
+     * The candidates are the sibling records: same vlan id, same domain,
+     * other sites. Those are exactly the records the import made for the same
+     * vlan elsewhere, which is the set an operator chooses among when saying
+     * "this vlan is stretched". The transport — fibre, E-Line, the outer
+     * 802.1ad tag in QinQ — is a description on the group, because it is a
+     * fact no device reports and the operator would otherwise keep nowhere.
+     */
+    public function link(Request $request, int $vlanRecordId): RedirectResponse
+    {
+        $this->authorizeManage();
+
+        $data = $request->validate([
+            'with' => ['required', 'array', 'min:1'],
+            'with.*' => ['integer'],
+            'description' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $record = Vlan::query()->findOrFail($vlanRecordId);
+
+        $siblings = Vlan::query()
+            ->whereIn('vlan_record_id', array_map('intval', $data['with']))
+            ->where('vlan_id', $record->vlan_id)
+            ->where('vlan_domain', $record->vlan_domain)
+            ->pluck('vlan_record_id')
+            ->all();
+
+        if ($siblings === []) {
+            return back()->with('error', __('ipam::ipam.vlans.no_siblings'));
+        }
+
+        $groupId = (new VlanLinker)->link($vlanRecordId, $siblings, $data['description'] ?? null);
+
+        return back()->with('success', __('ipam::ipam.vlans.linked', [
+            'group' => $groupId,
+        ]));
+    }
+
+    /**
+     * Take a record back out of its domain.
+     */
+    public function unlink(Request $request, int $vlanRecordId): RedirectResponse
+    {
+        $this->authorizeManage();
+
+        $removed = (new VlanLinker)->unlink($vlanRecordId);
+
+        return back()->with('success', $removed
+            ? __('ipam::ipam.vlans.unlinked')
+            : __('ipam::ipam.saved', ['what' => 'vlan']));
+    }
+
+    /**
+     * Keep the operator's account of the transport on the group.
+     */
+    public function describe(Request $request, int $vlanRecordId): RedirectResponse
+    {
+        $this->authorizeManage();
+
+        $data = $request->validate([
+            'description' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        (new VlanLinker)->describe($vlanRecordId, (string) ($data['description'] ?? ''));
+
+        return back()->with('success', __('ipam::ipam.annotated'));
     }
 
     /**

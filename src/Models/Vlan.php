@@ -24,6 +24,7 @@ use Illuminate\Support\Collection;
  * @property string|null $description
  * @property bool $auto_created
  * @property bool $ignored
+ * @property int $vlan_group_id
  */
 class Vlan extends BaseModel
 {
@@ -43,6 +44,7 @@ class Vlan extends BaseModel
         'description',
         'auto_created',
         'ignored',
+        'vlan_group_id',
     ];
 
     protected function casts(): array
@@ -54,7 +56,19 @@ class Vlan extends BaseModel
             'vlan_owner_id' => 'int',
             'auto_created' => 'bool',
             'ignored' => 'bool',
+            'vlan_group_id' => 'int',
         ];
+    }
+
+    /**
+     * The layer 2 domain this record belongs to when the vlan is carried
+     * across sites, null when it is a vlan of one site.
+     *
+     * @return BelongsTo<VlanGroup, $this>
+     */
+    public function group(): BelongsTo
+    {
+        return $this->belongsTo(VlanGroup::class, 'vlan_group_id', 'vlan_group_id');
     }
 
     /**

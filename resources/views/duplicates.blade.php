@@ -6,6 +6,9 @@
     <div class="container-fluid">
         @include('ipam::partials.nav', ['current' => 'duplicates'])
 
+        {{-- what the last action answered, and what validation refused: without this a refused form looks exactly like a working one --}}
+        @include('ipam::partials.notices')
+
         @include('ipam::partials.stats', ['stats' => [
             [
                 'label' => __('ipam::ipam.duplicates.summary_groups'),
@@ -112,11 +115,16 @@
                                     ])
                                 </td>
                                 <td>
-                                    @if ($group->vlanRecordId !== null)
+                                    @if ($group->vlanGroupId > 0)
+                                        <span class="label label-info" title="{{ __('ipam::ipam.vlans.stretched_hint') }}">
+                                            <i class="fa fa-arrows-left-right-to-line" aria-hidden="true"></i>
+                                            {{ $domainLabels[$group->vlanGroupId] ?? '' }}
+                                        </span>
+                                    @elseif ($group->vlanRecordId !== null)
                                         <span class="tw:font-mono">{{ $vlanLabels[$group->vlanRecordId] ?? '' }}</span>
                                     @else
                                         <span class="text-muted">-</span>
-                                    @endif
+                                    @endif>
                                 </td>
                                 <td class="text-center">
                                     <span class="label label-danger">{{ $group->count() }}</span>
@@ -149,6 +157,7 @@
                                             <input type="hidden" name="address" value="{{ $group->address }}">
                                             <input type="hidden" name="site_id" value="{{ $group->siteId }}">
                                             <input type="hidden" name="vlan_record_id" value="{{ $group->vlanRecordId ?? 0 }}">
+                                            <input type="hidden" name="vlan_group_id" value="{{ $group->vlanGroupId }}">
 
                                             <div class="row">
                                                 <div class="form-group col-md-3">

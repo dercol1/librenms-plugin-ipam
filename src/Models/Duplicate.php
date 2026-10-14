@@ -20,6 +20,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string $address
  * @property int $vlan_record_id
  * @property int $site_id
+ * @property int $vlan_group_id
  * @property bool $ignored
  * @property string|null $note
  * @property int $updated_by
@@ -30,7 +31,7 @@ class Duplicate extends BaseModel
 
     protected $primaryKey = 'duplicate_id';
 
-    protected $fillable = ['family', 'address', 'vlan_record_id', 'site_id', 'ignored', 'note', 'updated_by'];
+    protected $fillable = ['family', 'address', 'vlan_record_id', 'site_id', 'vlan_group_id', 'ignored', 'note', 'updated_by'];
 
     protected function casts(): array
     {

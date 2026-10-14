@@ -124,6 +124,62 @@ senza chiave esterna e sarebbe il genere di danno silenzioso che nessun engine
 fermerebbe. Le pagine con le liste vuote mostrano il collegamento finché non
 c'è almeno una voce.
 
+Ogni opzione «--» dei form spedisce **0**, perché 0 è il valore che significa
+«inherit dal blocco» o «nessuno». Per tre volte la regola di validazione è
+stata riscritta con un `exists:` che rifiuta lo 0 — nessuna riga ha chiave 0 —
+e per tre volte un form parzialmente compilato è stato rifiutato in silenzio:
+modificare un blocco «auto» sulla Mappa reti impostando solo il sito non
+salvava nulla e non mostrava nulla. La regola ora è **una sola classe condivisa**
+(`ScopeRules`): 0 passa sempre, qualsiasi altro valore deve esistere. E le
+pagine mostrano finalmente i **messaggi**: il flash di successo e di errore
+(19 messaggi che nessuna vista disegnava) e l'elenco dei rifiuti di
+validazione, così un form rifiutato non è più indistinguibile da uno che ha
+funzionato.
+
+**VLAN trasversali ai siti.** Una VLAN trasportata a layer 2 — fibra, E-Line,
+o QinQ dentro una S-VID 802.1ad — è **un solo dominio di broadcast che arriva
+uguale a più sedi**, mentre il plugin ne legge una per sito: è quello che gli
+apparati riportano, ed è la lettura giusta per gli id che sono solo lo stesso
+numero riusato in locale. Sulla pagina VLAN ogni record offre **«Stretched
+across sites»**: si spuntano i record fratelli (stesso id e dominio, altra
+sede) e si scrive come viaggia — la nota vive sul dominio e ogni membro la
+mostra. Da lì la regola delle collisioni cambia: **dentro un dominio la VLAN è
+da sola l'ambito**, la sede smette di separare, e lo stesso indirizzo alle due
+estremità diventa un conflitto, perché a layer 2 nessuno può possederlo due
+volte. Il verdetto «previsto» si dà una volta sul dominio e vale per tutte le
+sedi. Il collegamento è una **decisione dell'operatore** che l'import non tocca
+mai: due gruppi che si incontrano si fondono, un membro tolto lascia il resto
+intatto, l'ultimo che resta riporta la VLAN locale e il gruppo se ne va.
+
+I **nomi sono unici**, e per un po' l'unica cosa che lo faceva rispettare era
+il vincolo del database: rinominare un sito (o una voce degli elenchi) su un
+nome già occupato tornava come errore 500 con uno stack trace. Ora il rename
+dà una delle tre risposte possibili: **libero** se nessuno lo tiene, **assorbito**
+se lo tiene un sito svuotato dai merge (il residuo viene rimosso e l'operatore
+ne è informato), **rifiutato** con le istruzioni se lo tiene un sito con dati.
+La fonte dei residui è stata chiusa alla radice: spostare l'ultima sede fuori da
+un sito che non ha altro lo rimuove subito, invece di lasciare un nome che
+aspetta di scontrarsi con un rename.
+
+**Il gruppo di chi usa una voce.** Il badge «3 blocks» su una voce è un link:
+atterra sulla pagina che porta quei blocchi, con il filtro già applicato, così
+la classificazione si rivede senza scorrere tutto l'elenco. I filtri owner e
+function sono selezionabili a mano su Mappa reti, VLAN e Indirizzi.
+
+**Selezione e riclassificazione in blocco.** Sulla pagina Indirizzi le righe si
+spuntano, e il pannello «Reclassify the selection» imposta sito, VLAN,
+proprietario e funzione una volta sola: un campo lasciato com'è non viene
+toccato, «inherit» riporta la colonna a 0. La spunta «every address matching
+the filters» prende **tutte** le righe che rispettano i filtri correnti, non
+solo la pagina — e il server ricostruisce l'insieme con lo stesso builder
+della lista, quindi cambia esattamente ciò che l'operatore stava guardando,
+permessi di dispositivo inclusi.
+
+**Ordinamento.** Le intestazioni di colonna su Indirizzi, Mappa reti, VLAN e
+Proprietari ordinano l'elenco, e tre click fanno un giro completo: ascendente,
+discendente, poi l'ordine naturale della pagina. La colonna attiva è segnata
+dalla freccia, e il tipo di ordinamento non butta via i filtri.
+
 **Oggetti nascosti.** Loopback, link-local e multicast esistono su ogni
 dispositivo e non dicono nulla della rete: `127.0.0.1` visto su tre apparati
 leggerebbe come una collisione a tre. Le **range escluse** (modificabili nelle
@@ -344,7 +400,7 @@ Da verificare dopo un aggiornamento:
 ```sh
 php artisan ipam:check
 grep ipam composer.plugins.json
-php artisan route:list | grep -c ipam      # 23
+php artisan route:list | grep -c ipam      # 27
 ```
 
 ### Le tabelle del plugin e `lnms migrate`
@@ -438,7 +494,7 @@ aspetta, e quante righe contengono.
 ## Sviluppo
 
 ```sh
-vendor/bin/phpunit          # 160 test
+vendor/bin/phpunit          # 199 test
 composer test:lint          # pint
 composer test:types         # phpstan, livello 6
 ```
@@ -470,5 +526,5 @@ src/Models/                  le tabelle del plugin
 src/Support/                 aritmetica degli indirizzi, schema
 src/Web/                     controller, directory dei siti, ricerca di indirizzi liberi
 src/Console/                 i sette comandi
-tests/                       160 test
+tests/                       199 test
 ```
