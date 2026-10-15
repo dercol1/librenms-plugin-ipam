@@ -63,6 +63,12 @@ class AddressImporter
      */
     private array $seenVlanRecords = [];
 
+    /** rows of the operator's that the poll found again, so they became its own */
+    private int $handedBack = 0;
+
+    /** planned addresses a port really has been configured with */
+    private int $plansAbsorbed = 0;
+
     public function __construct(
         private readonly bool $importIpv4 = true,
         private readonly bool $importIpv6 = true,
@@ -178,6 +184,19 @@ class AddressImporter
             }
 
             $this->applyScope($record, $row, $block);
+
+            // An address somebody wrote down in advance, that a port has now
+            // really been configured with: one object, not two. The plan goes
+            // and its words move onto the occurrence, pin included, because the
+            // operator's classification is exactly as true as before and the
+            // poll would otherwise re-derive it away on the next run.
+            if ($this->absorbPlan($record, $family, $prefixLen, $context, $result)) {
+                $record->save();
+                $result->inserted++;
+                $this->countUnscoped($record, $result);
+
+                continue;
+            }
 
             // One row per address and scope, unless the network never reuses an
             // address, in which case the address alone identifies it.
@@ -427,8 +446,21 @@ class AddressImporter
 
             if ($existing !== null) {
                 $parentId = (int) $existing;
-                $parentStretchId = (int) Network::query()->whereKey($parentId)->value('stretch_id');
-                $this->seenNetworks[(int) $existing] = true;
+                $block = Network::query()->find($parentId);
+                $parentStretchId = (int) $block->stretch_id;
+                $this->seenNetworks[$parentId] = true;
+
+                // Found again by the poll: the range is the import's again.
+                // Everything an operator wrote on it — description, owner, site,
+                // the domain it was declared in — stays on the row, and is what
+                // protects it later from being deleted as scaffolding: the flag
+                // says whose row it is, the words say what is on it.
+                if ($block !== null && ! $block->auto_created) {
+                    $block->auto_created = true;
+                    $block->save();
+
+                    $this->handedBack++;
+                }
 
                 continue;
             }
@@ -457,6 +489,72 @@ class AddressImporter
     }
 
     /**
+     * A row the operator wrote in advance, superseded by the port that has it.
+     *
+     * A manual address has no port behind it, so the importer never matched it
+     * against the one that turns up: the same address ended up twice, and twice
+     * in one scope reads as a duplicate — a conflict invented by the plan, not
+     * by the estate. Here the two meet.
+     *
+     * The site decides whether they are the same object. A plan with no site is
+     * the operator describing the address without saying where it will be, so
+     * wherever the device is, it is the address they meant. A plan that named a
+     * site, and lands somewhere else, is a different object by the plugin's own
+     * rule — the site is what separates two scopes — so both rows stay and the
+     * operator is told, rather than the plugin quietly moving an address from
+     * one building to another.
+     *
+     * @return bool whether the plan was absorbed
+     */
+    private function absorbPlan(Address $record, int $family, int $prefixLen, string $context, ImportResult $result): bool
+    {
+        $plan = Address::query()
+            ->where('family', $family)
+            ->where('address', $record->address)
+            ->where('port_id', 0)
+            ->where('context_name', $context)
+            ->orderBy('address_record_id')
+            ->first();
+
+        if ($plan === null) {
+            return false;
+        }
+
+        if ((int) $plan->site_id !== 0 && (int) $plan->site_id !== (int) $record->site_id) {
+            $result->warnings[] = sprintf(
+                'the address %s was written down by hand for site %d and has turned up at site %d: '
+                . 'they are two objects until somebody says otherwise',
+                $record->address,
+                (int) $plan->site_id,
+                (int) $record->site_id,
+            );
+
+            return false;
+        }
+
+        // Only what the plan actually said. Zero on a plan is "inherit", the
+        // same word the row edit uses, and it is not a request to strip the
+        // classification the poll just derived: a plan written without a site
+        // and a device that turns up somewhere are the same address wherever it
+        // is, not an address with no site.
+        foreach (['site_id', 'location_id', 'vlan_record_id', 'net_owner_id', 'net_function_id'] as $field) {
+            if ((int) $plan->$field > 0) {
+                $record->$field = (int) $plan->$field;
+            }
+        }
+
+        $record->description = $plan->description;
+        // the pin goes with the words: they were the operator's, and the next
+        // poll must not re-derive them
+        $record->scope_locked = (bool) $plan->scope_locked;
+
+        $plan->delete();
+        $result->plansAbsorbed++;
+
+        return true;
+    }
+
+    /**
      * Hand the evidence over to the reconciler, which runs once both importers
      * are done: a vlan record the address side resolved to is a record the
      * estate still has, and reconciling before the address import would not know
@@ -466,6 +564,8 @@ class AddressImporter
     {
         $result->seenNetworks = $this->seenNetworks;
         $result->seenVlanRecords = $this->seenVlanRecords + $result->seenVlanRecords;
+        $result->handedBack += $this->handedBack;
+        $result->plansAbsorbed += $this->plansAbsorbed;
     }
 
     private function countUnscoped(Address $record, ImportResult $result): void

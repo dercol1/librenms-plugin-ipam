@@ -66,12 +66,12 @@ final class NetworksPage
         }
 
         if ($request->filled('described')) {
-            // "described" means somebody said something about this range
+            // "described" means somebody said something about this range, and
+            // the two sides are the same question the model's isDescribed()
+            // answers for a row: the filter and the badge must not disagree
             $request->input('described') === 'yes'
-                ? $query->where(function ($q): void {
-                    $q->where('site_id', '>', 0)->orWhere('net_owner_id', '>', 0);
-                })
-                : $query->where('site_id', 0)->where('net_owner_id', 0);
+                ? $query->described()
+                : $query->undescribed();
         }
 
         // the sort the headers asked for. never a raw column name from the

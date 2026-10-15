@@ -69,9 +69,9 @@ class SiteGroupingTest extends UnitTestCase
         ))[0];
 
         $this->assertSame(
-            ['Galazzano', 'Galazzano Sala B', 'AZIENDA0 Galazzano (Sala server A)'],
+            ['AZIENDA0 Galazzano (Sala server A)', 'Galazzano', 'Galazzano Sala B'],
             $galazzano['sites'],
-            'the proposal says which sites disappear, in a stable order'
+            'the proposal says which sites disappear, by name, in a stable order'
         );
         $this->assertCount(3, $galazzano['locations']);
     }

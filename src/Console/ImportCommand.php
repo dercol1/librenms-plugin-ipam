@@ -104,6 +104,22 @@ class ImportCommand extends Command
             ));
         }
 
+        // the other direction of the same rule: what the operator had written
+        // down and LibreNMS reports too is the poll's again
+        if ($result->handedBack > 0) {
+            $this->line(sprintf(
+                '  %d you had written down are reported by LibreNMS too: they are the poll\'s again, your words on them untouched',
+                $result->handedBack,
+            ));
+        }
+
+        if ($result->plansAbsorbed > 0) {
+            $this->line(sprintf(
+                '  %d address(es) written down in advance turned up on a real port: one object now, with your classification and its pin',
+                $result->plansAbsorbed,
+            ));
+        }
+
         if ($result->networksRemoved > 0 || $result->vlansRemoved > 0
             || $result->locationsRemoved > 0 || $result->sitesRemoved > 0) {
             $this->line(sprintf(

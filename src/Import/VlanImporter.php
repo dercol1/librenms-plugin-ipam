@@ -98,7 +98,7 @@ class VlanImporter
             $now = now();
 
             if (! isset($seen[$key])) {
-                $record = $this->upsertVlan((int) $row->vlan_number, (int) ($row->vlan_domain ?: 1), $siteId, $row->vlan_name, $now);
+                $record = $this->upsertVlan((int) $row->vlan_number, (int) ($row->vlan_domain ?: 1), $siteId, $row->vlan_name, $now, $result);
                 $seen[$key] = true;
                 $result->vlansCreated[(int) $row->vlan_number] = ($result->vlansCreated[(int) $row->vlan_number] ?? 0) + 1;
 
@@ -170,7 +170,7 @@ class VlanImporter
      * is what keeps the reconciler from treating a vlan a device still reports
      * as one the estate has lost.
      */
-    private function upsertVlan(int $vlanId, int $domain, int $siteId, ?string $name, mixed $now): Vlan
+    private function upsertVlan(int $vlanId, int $domain, int $siteId, ?string $name, mixed $now, ImportResult $result): Vlan
     {
         $existing = Vlan::query()
             ->where('vlan_id', $vlanId)
@@ -179,10 +179,28 @@ class VlanImporter
             ->first();
 
         if ($existing !== null) {
+            // Reported again by a device: the record is the import's again.
+            // Which is what lets the device fill a name we never got, and what
+            // hands the row back to the reconciler's reckoning later. Nothing
+            // the operator typed is touched here — description and owner are
+            // never written by the import, and what they wrote is what protects
+            // the row from being deleted as residue.
+            $wasTaken = ! $existing->auto_created;
+            $existing->auto_created = true;
+
             // Fill a name we never got, but never overwrite a real description.
-            if ($existing->auto_created && empty($existing->name) && ! empty($name)) {
+            $named = empty($existing->name) && ! empty($name);
+
+            if ($named) {
                 $existing->name = $name;
+            }
+
+            if ($wasTaken || $named) {
                 $existing->save();
+            }
+
+            if ($wasTaken) {
+                $result->handedBack++;
             }
 
             return $existing;

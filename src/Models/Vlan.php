@@ -76,6 +76,23 @@ class Vlan extends BaseModel
      * seeded from the device, then something unmistakable.
      */
     /**
+     * Has anybody said anything about this vlan?
+     *
+     * The content, not the flag: the flag says whose row it is, and the poll
+     * takes a record back when it starts reporting that vlan again. What an
+     * operator typed on it does not become the import's, and it is what the
+     * reconciler protects instead of deleting the row.
+     *
+     * The name is seeded from the device, so it is not in this list.
+     */
+    public function isDescribed(): bool
+    {
+        return ! empty($this->description)
+            || (int) $this->vlan_owner_id > 0
+            || (bool) $this->ignored;
+    }
+
+    /**
      * Is this record the operator's rather than the import's?
      *
      * Same rule as a block: the import owns what it created, so those are only

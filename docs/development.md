@@ -32,11 +32,15 @@ cd /opt/librenms-plugin-ipam
 php /opt/librenms/composer.phar install
 
 # the three gates
-vendor/bin/phpunit              # 251 tests
-composer test:lint              # pint
+composer test                   # lint, then phpstan, then the tests
+vendor/bin/phpunit              # the tests alone, ~10s, 282 of them
+composer test:lint              # pint, check only
 composer test:types             # phpstan, level 6
-composer test                   # all three in a row
 ```
+
+How to run the tests, and what to do when one fails, is its own section:
+[§11 Tests](#11-tests). The short version while working is a single file
+(`vendor/bin/phpunit tests/FooTest.php`), and the three gates before finishing.
 
 `composer test:types` runs **LibreNMS's** phpstan binary and larastan, not a
 local copy:
@@ -316,11 +320,46 @@ because an address was in it, and the address is gone.
 the import stops calling it its own, and from then on it behaves like something
 typed by hand: hideable, deletable.
 
+**A row with the operator's words on it is handed over too**, even with nothing
+under it. That is the other half of the rule and it exists because the two
+directions meet: an import that finds a described range takes it back, and if the
+device then stops again a delete-on-scaffolding would take the description with
+it. So the reconciler asks the content, not the flag — `isDescribed()` for a
+block, for a vlan — and the words are the protection. The badge on the page asks
+the same question, which is why "described" survives the row changing hands.
+
+**Blocks are judged deepest first.** A `/16` whose only child is a scaffolding
+`/24` still has a block under it while the `/24` is being judged, and would be
+handed over when both are actually empty. Ordering by descending prefix length
+makes the answer right on the first run instead of needing a second one.
+
+**The mirror: a row the poll finds again goes back to being the poll's.** A range,
+a vlan or an address the operator wrote down and that a device now reports too
+stops being theirs. Nothing the operator typed is touched — the import never
+writes a description or an owner — and what they wrote is what protects the row
+when the device stops once more. Sites are the exception by construction: nobody
+reports a site, so the import only ever fills it with the rooms the devices
+report, and a site somebody named stays theirs.
+
+**A planned address is absorbed, not duplicated.** A manual address has
+`port_id = 0`, so the importer's natural key never matched it against the port
+that later really got the address: the same address ended up twice, and twice in
+one scope reads as a duplicate — a conflict invented by the plan. `absorbPlan()`
+meets the two: the occurrence wins the row and takes the plan's non-zero
+classification, its description and its pin. Zero on a plan means "inherit", the
+same word the row edit uses, so it is never read as "strip what the poll derived".
+A plan that named **another** site keeps both rows and warns, because moving an
+address between buildings is not a thing an import may decide on its own.
+
 **Three guards, all of them refusals to act on thin evidence.** An import that read
 no address removes no block; one that read no VLAN removes no VLAN; one that read
 no room removes no room. That is also what a LibreNMS that has never been discovered
 looks like, and deleting the map on that evidence would be the worst thing this
 plugin could do. The reconciler says so in the warnings and moves on.
+
+Both directions are counted and reported: `handed_over` for what went to the
+operator, `handed_back` for what came back, `plans_absorbed` for the planned
+addresses a port really has.
 
 Things that are never touched, whatever the poll says: anything `auto_created = false`,
 anything inside a declared domain (no poll will ever confirm a layer 2 statement),
@@ -430,6 +469,101 @@ the plugin that does.
 
 ## 11. Tests
 
+### Running them
+
+One command, from the plugin directory:
+
+```sh
+vendor/bin/phpunit
+```
+
+That is the whole loop: about ten seconds, 282 tests, and **no database, no
+network and no running LibreNMS**. The harness builds the plugin's schema and the
+stand-in LibreNMS tables per test, on sqlite in memory, so there is nothing to
+reset when a run fails and the suite behaves the same on any machine.
+
+Narrowing it down, which is what the loop while working looks like:
+
+```sh
+vendor/bin/phpunit                                          # everything, ~10s
+vendor/bin/phpunit tests/StretchedNetworksTest.php          # one file
+vendor/bin/phpunit --filter ObjectMobilityTest              # one class
+vendor/bin/phpunit --filter test_a_domain_with_no_places    # one test
+vendor/bin/phpunit --filter stretch                         # a word, several tests
+vendor/bin/phpunit --list-tests                             # what is there
+```
+
+`--filter` takes a **name fragment, not a path**: a class name matches that
+class, a test name matches that test, and anything in between matches whatever
+contains it. `phpunit.xml` declares one testsuite, `Unit`, over `tests/`, so
+`--testsuite Unit` is the same as running everything and only matters when
+pointing phpunit at another configuration.
+
+Through composer, which is how the gates call them:
+
+| command | what it runs |
+|---|---|
+| `composer test:unit` | the tests |
+| `composer test:lint` | pint, check only |
+| `composer test:types` | phpstan level 6, with LibreNMS's own binary |
+| `composer test` | **lint, then types, then the tests** — the order is the order in `composer.json`, and composer stops at the first one that fails |
+| `composer fix:lint` | pint, which fixes what it can rather than only reporting |
+
+Cheapest first on purpose: pint answers in a second, phpstan in a few, the suite
+in ten. The order does not change what passes, only how long it takes to find
+out what does not.
+
+Two environment variables, and they are not a choice:
+
+- `LIBRENMS_PATH` — where the LibreNMS install is, default `/opt/librenms`. The
+  bootstrap needs its autoloader and its blade components, and if it cannot find
+  them it says which path it looked at and exits rather than failing 282 times:
+
+  ```sh
+  LIBRENMS_PATH=/srv/librenms vendor/bin/phpunit
+  ```
+
+- `DB_CONNECTION=testing` and `APP_ENV=testing` are forced in `phpunit.xml`, so a
+  test cannot reach a real database even by accident. There is nothing to
+  configure and nothing to clean up after a failure.
+
+`phpunit.xml` also turns on `failOnWarning` and `failOnRisky`, which is why a
+test that asserts nothing, or that leaves something behind, fails the run instead
+of passing quietly. That is not decoration: a green suite that asserted nothing is
+the one failure mode a suite cannot notice about itself.
+
+Two caches, and both of them will lie to you once:
+
+- `.phpunit.cache/` holds the results of the last runs, which is what lets
+  PHPUnit offer `--order-by=defects`. Deleting it costs nothing and is the first
+  thing to try when a run behaves as if it remembered something.
+- `vendor/orchestra/testbench-core/laravel/storage/framework/views/` holds
+  compiled blade. A view file that changes in a way the compiled copy does not
+  notice produces a page rendering the old markup while the test name says the new
+  one — the most confusing failure in this suite, and the one that looks like a
+  code bug:
+
+  ```sh
+  rm -rf vendor/orchestra/testbench-core/laravel/storage/framework/views/*
+  ```
+
+**When a test fails**, read the harness before the assertion. Three of them look
+exactly like a code bug and are not:
+
+1. **sqlite is more forgiving than MySQL.** A query that only mysql rejects
+   passes here — see the `whereColumn` trap in §9. Anything that touches SQL has to
+   be run once against the real MySQL before it is called done.
+2. **A direct controller render does not have the request.** The view's
+   `request()` is not the synthetic one unless it is bound with
+   `$this->app->instance('request', $req)`, and `$errors` is unset without
+   middleware. To exercise the notices partial, share a `ViewErrorBag`.
+3. **A model instance is stale after a bulk update.** `Vlan::query()->whereIn(...)->update(...)`
+   writes the rows and leaves every model in memory holding the old value. Re-read
+   with `->fresh()` before asserting, and the test stops depending on which layer
+   happened to write.
+
+### What the harness builds
+
 `tests/UnitTestCase.php` builds, per test:
 
 - the plugin's own schema, through `SchemaInstaller::install()`, on sqlite;
@@ -445,20 +579,17 @@ the plugin that does.
 - an `array` cache driver, because LibreNMS's `ConfigRepository` uses a persistent
   file cache that poisons a run.
 
-There are three things the harness cannot do for you:
-
-1. **sqlite is more forgiving than MySQL.** See the `whereColumn` trap above.
-2. **The PHP cache of compiled views** under
-   `vendor/orchestra/testbench-core/laravel/storage/framework/views/` goes stale
-   when a blade file changes in a way the mtime does not catch. Clear it.
-3. **In a direct controller render the view's `request()` is not the synthetic
-   request** unless it is bound with `$this->app->instance('request', $req)`, and
-   `$errors` is unset without middleware. To test the notices partial, share a
-   `ViewErrorBag`.
-
 What the suite is for, in rough order of importance: the collision rule (the part
 that has to be right), the import's resolution order and its reconciliation, the
+mobility of objects between the operator and the poll in both directions, the
 refusals (what is not deleted and why), and the pages rendering at all.
+
+Three files hold the stretched domains down from two directions each:
+`StretchedVlansTest` and `StretchedNetworksTest` go through the services and the
+collision rule, `StretchedDomainsTest` goes through the actions an operator
+clicks, what the pages offer, and the promises that are not about finding a
+conflict — the import leaves a declared domain alone, nesting is refused, a domain
+of one site goes with itself, two domains merge.
 
 ## 12. What "done" means
 

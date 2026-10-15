@@ -158,29 +158,57 @@ pagine mostrano finalmente i **messaggi**: il flash di successo e di errore
 validazione, così un form rifiutato non è più indistinguibile da uno che ha
 funzionato.
 
-**Ciclo di vita: nascondere o cancellare.** La regola è una frase sola e tutto il
-resto ne segue. Ciò che **LibreNMS riporta è dell'import**, e le sue righe si
-possono **solo nascondere**: il prossimo poll le riporta indietro, quindi
-cancellarle sarebbe un modo più lento di nasconderle. Ciò che **un operatore ha
-scritto** — o che l'import gli ha **affidato** quando LibreNMS ha smesso di
-riportarlo — è suo, e si cancella.
+**Ciclo di vita: nascondere o cancellare, e chi è il proprietario.** La regola è
+una frase sola e tutto il resto ne segue. Ciò che **LibreNMS riporta è
+dell'import**, e le sue righe si possono **solo nascondere**: il prossimo poll le
+riporta indietro, quindi cancellarle sarebbe un modo più lento di nasconderle.
+Ciò che **un operatore ha scritto** — o che l'import gli ha **affidato** quando
+LibreNMS ha smesso di riportarlo — è suo, e si cancella.
 
-Ed è proprio l'import a decidere quando affida. A un `lnms ipam:import` gli
-oggetti che **non ci sono più** in LibreNMS si dividono in due, e il criterio è
-la gerarchia:
+Il movimento avviene **in entrambe le direzioni**, ed è la stessa frase vista
+dall'altra parte.
 
-- **senza gerarchia** erano impalcatura: un `/24` esisteva perché dentro c'era
-  un indirizzo, e quell'indirizzo non c'è più. La riga va via.
-- **con gerarchia** sono una descrizione di dati vivi: dentro la rete ci sono
-  ancora indirizzi, o sotto ci sono altre reti. Cancellarla porterebbe via la
-  mappa, quindi l'import **smette di chiamarla sua** (`auto_created` diventa
-  falso) e da lì in poi si comporta come una scritta a mano: nascondibile e
-  cancellabile, con un bottone che compare.
+**Se un oggetto sparisce da LibreNMS**, l'import distingue per **gerarchia**:
+
+- **senza gerarchia** era impalcatura: un `/24` esisteva perché dentro c'era un
+  indirizzo, e quell'indirizzo non c'è più. La riga va via.
+- **con gerarchia** è una descrizione di dati vivi: dentro la rete ci sono ancora
+  indirizzi, o sotto ci sono altre reti. Cancellarla porterebbe via la mappa,
+  quindi l'import **smette di chiamarla sua** (`auto_created` diventa falso) e da
+  lì in poi si comporta come una scritta a mano: nascondibile e cancellabile, con
+  un bottone che compare.
+
+**Se un oggetto che hai scritto a mano torna in LibreNMS**, succede il contrario:
+**torna all'import**, perché ora è il poll a riportarlo. Non è un ribaltamento
+delle tue scelte, è il confine che era stato definito dall'altra parte: fino ad
+adesso la riga era tua perché nessuno la riportava, e adesso la riporta qualcuno.
+Però **le parole che ci hai messo sopra restano**: una descrizione non diventa
+dell'apparato perché un apparato è comparso. E sono proprio quelle parole a
+proteggere la riga quando l'apparato sparisce di nuovo — il ciclo si chiude
+lì, e l'import te lo dice ogni volta.
 
 Le **stanze** seguono la stessa regola: una `sysLocation` che LibreNMS non
 conosce più e non ha nulla addosso va via, e con lei il sito segnaposto che era
-nato solo per accoglierla. Una stanza che una VLAN dell'operatore nomina, o da
-cui arriva un indirizzo, resta.
+nato solo per accoglierla. Una stanza che una VLAN tua nomina, o da cui arriva un
+indirizzo, resta.
+
+Un caso che prima creava un danno e che ora è risolto: **un indirizzo scritto in
+anticipo che un apparato è stato davvero configurato**. Il piano non ha una porta
+dietro, quindi l'import non lo incontrava mai: lo stesso indirizzo finiva due
+volte, e due volte nello stesso ambito legge come duplicato — un conflitto
+inventato dal piano, non dall'utenza. Ora i due si incontrano e diventano **un
+oggetto solo**: la riga è quella della porta reale e le parole del piano
+(classificazione, descrizione e il suo pin) ci vanno sopra, così il poll successivo
+non le ricalcola via. Se il piano aveva detto **un altro sito**, i due restano
+separati — sono due oggetti diversi secondo la regola stessa del plugin, il sito è
+che separa due ambiti — e l'import **te lo dice** invece di spostare un indirizzo
+da un edificio a un altro.
+
+I **siti** sono l'unica eccezione, e per costruzione: un sito non lo riporta
+nessuno, è una scelta di chi scrive, quindi l'import non lo rivendica mai. Quello
+che fa è **riempierlo delle stanze** che gli apparati riportano, e nient'altro: un
+sito che hai creato o rinominato resta tuo, e i siti *segnaposto* restano
+segnaposto finché non li sistemi.
 
 Due **rifiuti espliciti**, perché sono le due situazioni in cui una cancellazione
 farebbe danno: un blocco con indirizzi dentro non si cancella (li lascerebbe
@@ -189,6 +217,10 @@ indirizzi classificati dentro neppure. E un import che **non ha letto nulla** no
 conclude niente: è anche quello che si vede con LibreNMS mai scoperto, e
 cancellare la mappa su quella prova sarebbe la cosa peggiore che il plugin
 potesse fare — quindi lo dice e non agisce.
+
+Il badge **«descritto»** dice se qualcuno ha scritto qualcosa, non di chi è la
+riga: un blocco che hai descritto resta «descritto» anche quando l'import lo
+riprende, perché la descrizione è ancora lì.
 
 **Imputare a mano sito e sede.** VLAN, reti e indirizzio si possono sempre
 attribuire a mano, oltre che ai siti anche alle **sedi**: una rete o un indirizzo
@@ -627,11 +659,18 @@ php artisan ipam:free 10.14.146.0/24 --suggest=3   # solo i primi tre
 
 `ipam:import` si può rieseguire senza problemi, ed è pensato per girare a ogni
 ciclo di polling. Aggiorna ciò che ha visto e conserva ciò che un operatore ha
-bloccato. Sul ciò che LibreNMS ha smesso di riportare decide in base alla
-gerarchia: **senza** nulla addosso la riga viene rimossa, **con** ancora dati
-sopra viene **affidata all'operatore** — smette di essere dell'import e diventa
-una riga che si può nascondere o cancellare come una scritta a mano. Il comando
-dice entrambe le cose, e non conclude niente se non ha letto nulla.
+bloccato. Poi decide **in entrambe le direzioni**, e lo dice:
+
+- ciò che LibreNMS **ha smesso** di riportare: **senza** nulla addosso la riga
+  viene rimossa, **con** ancora dati sopra — o con parole dell'operatore —
+  viene **affidata all'operatore**;
+- ciò che LibreNMS **ha ripreso** a riportare, e che l'operatore aveva scritto
+  a mano, **torna all'import** con le parole dell'operatore ancora sopra;
+- gli **indirizzi scritti in anticipo** che un apparato è stato davvero
+  configurato ad avere diventano **uno** solo oggetto, con la classificazione e
+  il pin del piano.
+
+E non conclude niente se non ha letto nulla.
 
 Le righe nelle range escluse vengono nascoste solo alla creazione: una riga
 riportata in luce a mano resta tale per ogni import successivo.
@@ -667,7 +706,7 @@ aspetta, e quante righe contengono.
 
 ```sh
 composer install                # una volta sola
-vendor/bin/phpunit              # 251 test
+vendor/bin/phpunit              # 282 test
 composer test:lint              # pint
 composer test:types             # phpstan, livello 6
 composer test                   # i tre in fila
@@ -684,9 +723,13 @@ php artisan ipam:import         # per vedere l'effetto sui dati veri
 ```
 
 I test girano su sqlite con le tabelle di LibreNMS che il plugin legge ricreate a
-mano, quindi non servono né database né rete. Il **manuale di sviluppo** — architettura,
-come si aggiunge una funzione, le convenzioni e i trabocchetti già incontrati — è
-in [docs/development.md](docs/development.md).
+mano: **non servono né database né rete né un LibreNMS in esecuzione**, e una
+suite intera dura una decina di secondi. Mentre si lavora il ciclo è un file solo
+(`vendor/bin/phpunit tests/QualcosaTest.php`); prima di finire, i tre gate.
+
+Il **manuale di sviluppo** — architettura, come si aggiunge una funzione, le
+convenzioni, **come si lanciano i test e cosa controllare quando uno fallisce**, e
+i trabocchetti già incontrati — è in [docs/development.md](docs/development.md).
 
 ## Struttura
 
@@ -710,5 +753,5 @@ src/Models/                  le tabelle del plugin
 src/Support/                 aritmetica degli indirizzi, schema
 src/Web/                     controller, directory dei siti, ricerca di indirizzi liberi
 src/Console/                 i sette comandi
-tests/                       251 test
+tests/                       282 test
 ```

@@ -4,6 +4,7 @@ namespace Dercol1\LibrenmsIpam\Models;
 
 use App\Models\BaseModel;
 use Dercol1\LibrenmsIpam\Support\Cidr;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use InvalidArgumentException;
@@ -149,6 +150,73 @@ class Network extends BaseModel
     public function stretch(): BelongsTo
     {
         return $this->belongsTo(NetworkStretch::class, 'stretch_id', 'stretch_id');
+    }
+
+    /**
+     * Has anybody said anything about this range?
+     *
+     * Asked of the content and not of the auto_created flag, on purpose. The
+     * flag answers "whose row is this", and an import that finds a range the
+     * operator had written down takes it back: from that moment the poll owns it
+     * again. But a description, an owner, a site are words somebody typed, and
+     * those words do not become the import's because a device started reporting
+     * the range again. They are what the reconciler protects instead of
+     * deleting.
+     *
+     * The name of the vlan is not in this list for either model: there it is
+     * seeded from the device, so its presence says nothing about an operator.
+     */
+    public function isDescribed(): bool
+    {
+        return ! empty($this->description)
+            || (int) $this->site_id > 0
+            || (int) $this->location_id > 0
+            || (int) $this->vlan_id > 0
+            || (int) $this->net_owner_id > 0
+            || (int) $this->net_function_id > 0
+            || (bool) $this->ignored;
+    }
+
+    /**
+     * @param  Builder<Network>  $query
+     * @return Builder<Network>
+     */
+    public function scopeDescribed(Builder $query): Builder
+    {
+        return $query->where(function (Builder $inner): void {
+            $inner->where(function (Builder $text): void {
+                $text->whereNotNull('description')->where('description', '!=', '');
+            })
+                ->orWhere('site_id', '>', 0)
+                ->orWhere('location_id', '>', 0)
+                ->orWhere('vlan_id', '>', 0)
+                ->orWhere('net_owner_id', '>', 0)
+                ->orWhere('net_function_id', '>', 0);
+        });
+    }
+
+    /**
+     * The blocks nobody has said anything about: the ones the import built.
+     *
+     * The mirror of scopeDescribed, and the negation written out rather than
+     * wrapped in a NOT, so a row with a description of two spaces or a null
+     * counts as nobody having said anything.
+     *
+     * @param  Builder<Network>  $query
+     * @return Builder<Network>
+     */
+    public function scopeUndescribed(Builder $query): Builder
+    {
+        return $query->where(function (Builder $inner): void {
+            $inner->where(function (Builder $text): void {
+                $text->whereNull('description')->orWhere('description', '=', '');
+            })
+                ->where('site_id', 0)
+                ->where('location_id', 0)
+                ->where('vlan_id', 0)
+                ->where('net_owner_id', 0)
+                ->where('net_function_id', 0);
+        });
     }
 
     /**

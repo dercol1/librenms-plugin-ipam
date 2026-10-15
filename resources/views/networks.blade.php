@@ -116,12 +116,15 @@
                         <tr>
                             <td>
                                 <code class="tw:text-gray-900 tw:dark:text-gray-100">{{ $block->cidr }}</code>
+                                {{-- described is a question about the content, not about who owns
+                                     the row: an import that finds a range the operator had written
+                                     down takes it back, and the words on it do not go with it --}}
                                 @if ($block->ignored)
                                     <span class="label label-default tw:ml-1">{{ __('ipam::ipam.hidden') }}</span>
-                                @elseif ($block->auto_created)
-                                    <span class="label label-default tw:ml-1">{{ __('ipam::ipam.networks.auto') }}</span>
-                                @else
+                                @elseif ($block->isDescribed())
                                     <span class="label label-info tw:ml-1">{{ __('ipam::ipam.networks.described') }}</span>
+                                @else
+                                    <span class="label label-default tw:ml-1">{{ __('ipam::ipam.networks.auto') }}</span>
                                 @endif
                                 @if ($block->stretch_id > 0)
                                     <span class="label label-info tw:ml-1"

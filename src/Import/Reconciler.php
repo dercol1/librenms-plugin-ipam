@@ -61,9 +61,16 @@ class Reconciler
             return;
         }
 
+        // Deepest first, so the judgement about a block is made after the ones
+        // below it: a /16 whose only child was a scaffolding /24 would look like
+        // it still had a block under it and be handed over, when in fact both
+        // are empty. Walking the tree downwards makes the answer right the first
+        // time instead of needing a second run.
         $ids = Network::query()
             ->where('auto_created', true)
             ->whereNotIn('network_id', array_keys($result->seenNetworks))
+            ->orderByDesc('prefixlen')
+            ->orderBy('family')
             ->pluck('network_id')
             ->all();
 
@@ -80,8 +87,15 @@ class Reconciler
                 continue;
             }
 
+            // Two reasons to keep the row rather than delete it: something
+            // still hangs off it, or somebody wrote on it. A description, an
+            // owner, a site are the operator's words, and the fact that a device
+            // started reporting the range again — which is what handed the row
+            // back to the import in the first place — is no reason to throw them
+            // away when the device stops once more.
             $inUse = Address::query()->where('network_id', $block->network_id)->exists()
-                || Network::query()->where('parent_id', $block->network_id)->exists();
+                || Network::query()->where('parent_id', $block->network_id)->exists()
+                || $block->isDescribed();
 
             if ($inUse) {
                 $block->auto_created = false;
@@ -182,7 +196,10 @@ class Reconciler
                 continue;
             }
 
-            if (Address::query()->where('vlan_record_id', $id)->exists()) {
+            // as with the blocks: addresses classified into it, or words
+            // somebody typed on it, are both reasons to hand the row over
+            // instead of deleting it
+            if (Address::query()->where('vlan_record_id', $id)->exists() || $vlan->isDescribed()) {
                 $vlan->auto_created = false;
                 $vlan->save();
                 $result->handedOver++;

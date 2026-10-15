@@ -77,6 +77,19 @@ class ImportResult
     /** vlans nothing points at any more */
     public int $vlansRemoved = 0;
 
+    /**
+     * Rows of the operator's that the poll found again.
+     *
+     * The other direction of the same rule: an object attributed by hand stops
+     * being the operator's the moment LibreNMS reports it too, which is what
+     * "automatic" means here — the poll owns it again, and only the words the
+     * operator typed keep it from being deleted when it vanishes once more.
+     */
+    public int $handedBack = 0;
+
+    /** planned addresses a port has really been configured with */
+    public int $plansAbsorbed = 0;
+
     /** rooms LibreNMS no longer knows, and the placeholders they left behind */
     public int $locationsRemoved = 0;
 
@@ -102,6 +115,8 @@ class ImportResult
             'removed' => $this->removed,
             'addresses' => $this->addressesSeen,
             'handed_over' => $this->handedOver,
+            'handed_back' => $this->handedBack,
+            'plans_absorbed' => $this->plansAbsorbed,
             'networks_removed' => $this->networksRemoved,
             'vlans_removed' => $this->vlansRemoved,
             'locations_removed' => $this->locationsRemoved,

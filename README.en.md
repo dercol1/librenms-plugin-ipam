@@ -147,28 +147,56 @@ to exist. And the pages finally show the **messages**: the success and error fla
 (19 messages no view was drawing) and the list of validation refusals, so a
 refused form is no longer indistinguishable from one that worked.
 
-**Lifecycle: hide or delete.** The rule is one sentence and everything else
-follows from it. What **LibreNMS reports belongs to the import**, and its rows can
-only be **hidden**: the next poll brings them back, so deleting one would be a
-slower way of hiding it. What **an operator wrote** — or what the import **handed
-over** when LibreNMS stopped reporting it — is theirs, and is deleted.
+**Lifecycle: hide or delete, and whose row it is.** The rule is one sentence and
+everything else follows from it. What **LibreNMS reports belongs to the import**,
+and its rows can only be **hidden**: the next poll brings them back, so deleting
+one would be a slower way of hiding it. What **an operator wrote** — or what the
+import **handed over** when LibreNMS stopped reporting it — is theirs, and is
+deleted.
 
-And it is the import that decides when to hand over. On an `lnms ipam:import` the
-objects that **are no longer there** in LibreNMS split in two, and the criterion
-is hierarchy:
+The movement happens in **both directions**, and it is the same sentence seen from
+the other side.
 
-- **no hierarchy** they were scaffolding: a `/24` existed because an address was
+**When an object disappears from LibreNMS**, the import decides by **hierarchy**:
+
+- **no hierarchy** it was scaffolding: a `/24` existed because an address was
   inside it, and that address is gone. The row goes.
-- **with hierarchy** they are a description of live data: addresses are still in
-  the range, or narrower ranges still hang below it. Deleting it would take the
-  map with it, so the import **stops calling it its own** (`auto_created` becomes
+- **with hierarchy** it is a description of live data: addresses are still in the
+  range, or narrower ranges still hang below it. Deleting it would take the map
+  with it, so the import **stops calling it its own** (`auto_created` becomes
   false) and from then on it behaves like something typed by hand: hideable and
   deletable, with a button that appears.
+
+**When an object you wrote by hand turns up in LibreNMS**, the opposite happens:
+**it goes back to the import**, because now a poll reports it. That is not your
+choices being undone, it is the boundary that had been drawn from the other side:
+until now the row was yours because nobody was reporting it, and now someone is.
+But **the words you put on it stay**: a description does not become the device's
+because a device turned up. And it is exactly those words that protect the row
+when the device disappears again — the loop closes there, and the import tells you
+every time it happens.
 
 **Rooms** follow the same rule: a `sysLocation` LibreNMS no longer knows and that
 has nothing hanging off it goes, and with it the placeholder site that was born
 only to hold it. A room an operator's VLAN names, or that an address comes from,
 stays.
+
+One case that used to do visible harm and is now settled: **an address written in
+advance that a device has really been configured with**. The plan has no port
+behind it, so the importer never met it: the same address ended up twice, and
+twice in one scope reads as a duplicate — a conflict invented by the plan rather
+than by the estate. The two now meet and become **one object**: the row is the
+one the port really has, and the plan's words (classification, description and its
+pin) go on top, so the next poll does not re-derive them away. If the plan named
+**another site**, the two stay apart — they are different objects by the plugin's
+own rule, the site is what separates two scopes — and the import **says so**
+rather than moving an address from one building to another.
+
+**Sites** are the one exception, and by construction: nobody reports a site, it is
+a decision by whoever writes it down, so the import never claims one. What it does
+is **fill it with the rooms** the devices report, and nothing else: a site you
+created or renamed stays yours, and placeholder sites stay placeholders until you
+file them.
 
 Two explicit **refusals**, because they are the two situations where a delete
 would do damage: a block with addresses inside is not deleted (they would be left
@@ -177,6 +205,10 @@ neither is a VLAN with addresses classified into it. And an import that **read
 nothing** concludes nothing: that is also what a LibreNMS that has never been
 discovered looks like, and deleting the map on that evidence would be the worst
 thing the plugin could do — so it says so and does not act.
+
+The **"described"** badge answers whether somebody has said something, not whose
+row it is: a block you described stays "described" even after the import takes it
+back, because the description is still there.
 
 **Attributing a site and a room by hand.** VLANs, networks and addresses can
 always be attributed by hand, to sites and also to **rooms**: a network or an
@@ -601,11 +633,18 @@ php artisan ipam:free 10.14.146.0/24 --suggest=3   # only the first three
 ```
 
 `ipam:import` can be re-run without trouble, and it is meant to run on every
-polling cycle. It updates what it saw and keeps what an operator pinned. About what
-LibreNMS stopped reporting it decides by hierarchy: with **nothing** hanging off
-it the row is removed, with data still above it is **handed to the operator** — it
-stops being the import's and becomes a row that can be hidden or deleted like one
-typed by hand. The command reports both, and concludes nothing if it read nothing.
+polling cycle. It updates what it saw and keeps what an operator pinned, and then
+it decides in **both directions** and says so:
+
+- what LibreNMS **stopped** reporting: with **nothing** hanging off it the row is
+  removed, with data still above it — or with the operator's words on it — it is
+  **handed to the operator**;
+- what LibreNMS **started** reporting again, that the operator had written down,
+  **goes back to the import** with the operator's words still on it;
+- **planned addresses** a device has really been configured with become **one**
+  object, carrying the plan's classification and its pin.
+
+And it concludes nothing if it read nothing.
 
 Rows in the excluded ranges are hidden only at creation: a row brought back into
 the light by hand stays that way on every later import.
@@ -641,7 +680,7 @@ many rows they hold.
 
 ```sh
 composer install                # once
-vendor/bin/phpunit              # 251 tests
+vendor/bin/phpunit              # 282 tests
 composer test:lint              # pint
 composer test:types             # phpstan, level 6
 composer test                   # all three in a row
@@ -658,9 +697,13 @@ php artisan ipam:import         # to see the effect on the real data
 ```
 
 The tests run on sqlite with the LibreNMS tables the plugin reads recreated by
-hand, so no database and no network are needed. The **development manual** —
-architecture, how to add a feature, the conventions and the traps already met — is
-in [docs/development.md](docs/development.md).
+hand: **no database, no network and no running LibreNMS are needed**, and a full
+suite takes about ten seconds. The loop while working is a single file
+(`vendor/bin/phpunit tests/SomethingTest.php`); before finishing, the three gates.
+
+The **development manual** — architecture, how to add a feature, the conventions,
+**how to run the tests and what to check when one fails**, and the traps already
+met — is in [docs/development.md](docs/development.md).
 
 ## Layout
 
@@ -685,5 +728,5 @@ src/Models/                  the plugin's tables
 src/Support/                 address arithmetic, schema
 src/Web/                     controllers, site directory, free address finder
 src/Console/                 the seven commands
-tests/                       251 tests
+tests/                       282 tests
 ```
