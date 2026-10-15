@@ -225,7 +225,7 @@
 
                                             <div class="tw:flex tw:flex-wrap tw:items-end tw:gap-2">
                                                 <form method="post"
-                                                      action="{{ route('ipam.vlans.describe', $vlan->vlan_record_id) }}"
+                                                      action="@include('ipam::partials.action', ['route' => 'ipam.vlans.describe', 'params' => [$vlan->vlan_record_id], 'fallback' => 'plugin/ipam/vlans/' . $vlan->vlan_record_id . '/describe'])"
                                                       class="tw:flex tw:items-end tw:gap-2 tw:m-0" style="flex: 1;">
                                                     @csrf
                                                     <div class="form-group tw:mb-0" style="flex: 1;">
@@ -236,7 +236,7 @@
                                                     </div>
                                                     <button type="submit" class="btn btn-default btn-sm">{{ __('ipam::ipam.vlans.save_description') }}</button>
                                                 </form>
-                                                <form method="post" action="{{ route('ipam.vlans.unlink', $vlan->vlan_record_id) }}" class="tw:m-0">
+                                                <form method="post" action="@include('ipam::partials.action', ['route' => 'ipam.vlans.unlink', 'params' => [$vlan->vlan_record_id], 'fallback' => 'plugin/ipam/vlans/' . $vlan->vlan_record_id . '/unlink'])" class="tw:m-0">
                                                     @csrf
                                                     <button type="submit" class="btn btn-danger btn-sm">{{ __('ipam::ipam.vlans.unlink') }}</button>
                                                 </form>
@@ -244,7 +244,7 @@
                                         @endif
 
                                         @if (($linkCandidates[$vlan->vlan_record_id] ?? []) !== [])
-                                            <form method="post" action="{{ route('ipam.vlans.link', $vlan->vlan_record_id) }}" class="tw:mt-2">
+                                            <form method="post" action="@include('ipam::partials.action', ['route' => 'ipam.vlans.link', 'params' => [$vlan->vlan_record_id], 'fallback' => 'plugin/ipam/vlans/' . $vlan->vlan_record_id . '/link'])" class="tw:mt-2">
                                                 @csrf
                                                 <label class="tw:block tw:text-xs tw:uppercase tw:tracking-wide tw:text-gray-500">{{ __('ipam::ipam.vlans.link_with') }}</label>
                                                 @foreach ($linkCandidates[$vlan->vlan_record_id] as $candidate)
@@ -268,6 +268,59 @@
                                         <p class="text-muted small tw:mb-0">
                                             {{ __('ipam::ipam.vlans.link_none') }}
                                         </p>
+                                    @endif
+
+                                    {{-- the rooms this vlan is in: the ones the devices report, and
+                                         any the operator adds by hand for a room nothing is plugged
+                                         into yet. A reported room comes back on the next import,
+                                         because that is the truth the poll has --}}
+                                    <hr>
+                                    <strong>{{ __('ipam::ipam.vlans.rooms_title') }}</strong>
+                                    <p class="text-muted small">{{ __('ipam::ipam.vlans.rooms_intro') }}</p>
+
+                                    <div class="tw:flex tw:flex-wrap tw:gap-2 tw:mb-2">
+                                        @foreach ($vlan->locations as $vlanLocation)
+                                            <span class="label label-default">
+                                                {{ $vlanLocation->location?->name ?? $vlanLocation->location_id }}
+                                                <form method="post" action="@include('ipam::partials.action', ['route' => 'ipam.vlans.room', 'params' => [$vlan->vlan_record_id], 'fallback' => 'plugin/ipam/vlans/' . $vlan->vlan_record_id . '/room'])"
+                                                      class="tw:inline" onsubmit="return confirm('{{ __('ipam::ipam.vlans.room_remove_confirm') }}');">
+                                                    @csrf
+                                                    <input type="hidden" name="location_id" value="{{ $vlanLocation->location_id }}">
+                                                    <input type="hidden" name="remove" value="1">
+                                                    <button type="submit" class="tw:border-0 tw:bg-transparent tw:p-0 tw:text-xs"
+                                                            title="{{ __('ipam::ipam.vlans.room_remove') }}">&times;</button>
+                                                </form>
+                                            </span>
+                                        @endforeach
+                                        @if ($vlan->locations->isEmpty())
+                                            <span class="text-muted small">{{ __('ipam::ipam.vlans.rooms_none') }}</span>
+                                        @endif
+                                    </div>
+
+                                    <form method="post" action="@include('ipam::partials.action', ['route' => 'ipam.vlans.room', 'params' => [$vlan->vlan_record_id], 'fallback' => 'plugin/ipam/vlans/' . $vlan->vlan_record_id . '/room'])"
+                                          class="tw:flex tw:items-end tw:gap-2">
+                                        @csrf
+                                        <div class="form-group tw:mb-0" style="flex: 1; max-width: 24rem;">
+                                            <label class="sr-only">{{ __('ipam::ipam.vlans.rooms_title') }}</label>
+                                            <select name="location_id" class="form-control form-control-sm"
+                                                    data-fill="ipam-options-rooms" data-selected="">
+                                                <option value="">-- {{ __('ipam::ipam.vlans.rooms_pick') }} --</option>
+                                            </select>
+                                        </div>
+                                        <button type="submit" class="btn btn-default btn-sm">{{ __('ipam::ipam.vlans.room_add') }}</button>
+                                    </form>
+
+                                    @if ($vlan->isManual())
+                                        <hr>
+                                        <form method="post" action="@include('ipam::partials.action', ['route' => 'ipam.vlans.destroy', 'params' => [$vlan->vlan_record_id], 'fallback' => 'plugin/ipam/vlans/' . $vlan->vlan_record_id])"
+                                              onsubmit="return confirm('{{ __('ipam::ipam.vlans.delete_confirm') }}');">
+                                            @csrf
+                                            @method('DELETE')
+                                            <button type="submit" class="btn btn-danger btn-sm">
+                                                {{ __('ipam::ipam.vlans.delete') }}
+                                            </button>
+                                            <span class="text-muted small tw:ml-2">{{ __('ipam::ipam.vlans.delete_hint') }}</span>
+                                        </form>
                                     @endif
                                 </td>
                             </tr>
@@ -308,6 +361,15 @@
                             <label>{{ __('ipam::ipam.vlans.domain') }}</label>
                             <input type="number" name="vlan_domain" class="form-control form-control-sm"
                                    min="1" value="1">
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>{{ __('ipam::ipam.networks.room') }}</label>
+                            <select name="location_id" class="form-control form-control-sm">
+                                <option value="">--</option>
+                                @foreach ($options['rooms'] ?? [] as $id => $name)
+                                    <option value="{{ $id }}">{{ $name }}</option>
+                                @endforeach
+                            </select>
                         </div>
                         <div class="form-group col-md-2">
                             <label>{{ __('ipam::ipam.vlans.site') }}</label>

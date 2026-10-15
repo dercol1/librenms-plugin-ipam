@@ -2,8 +2,10 @@
 
 namespace Dercol1\LibrenmsIpam\Collision;
 
+use Closure;
 use Dercol1\LibrenmsIpam\Models\Address;
 use Dercol1\LibrenmsIpam\Models\Duplicate;
+use Dercol1\LibrenmsIpam\Models\NetworkPlace;
 use Dercol1\LibrenmsIpam\Models\Vlan;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -74,13 +76,15 @@ class DuplicateDetector
         foreach ($rows as $row) {
             $scopeVlan = $vlanColumn === null ? 0 : (int) $row->scope_vlan;
             $scopeGroup = $vlanColumn === null ? 0 : (int) $row->scope_group;
+            $scopeNetwork = $vlanColumn === null ? 0 : (int) $row->scope_network;
 
             $group = $this->buildGroup(
                 (int) $row->family,
                 $row->address,
                 $scopeVlan,
                 (int) $row->scope_site,
-                $scopeGroup
+                $scopeGroup,
+                $scopeNetwork
             );
 
             if ($group === null) {
@@ -89,7 +93,9 @@ class DuplicateDetector
 
             // keyed by address *and* scope: one address can repeat in two
             // vlans at once, and those are two separate findings
-            $groups[$row->address . '-' . $scopeVlan . '-' . $scopeGroup . '-' . $row->scope_site] = $group;
+            $key = implode('-', [$row->address, $scopeVlan, $scopeGroup, $scopeNetwork, $row->scope_site]);
+
+            $groups[$key] = $group;
         }
 
         return array_values($groups);
@@ -141,17 +147,43 @@ class DuplicateDetector
                 ->selectRaw('ipam_addresses.address as address')
                 ->groupBy('scope_site');
         } else {
-            $query->selectRaw('CASE WHEN v.vlan_group_id > 0 THEN 0 ELSE ipam_addresses.vlan_record_id END as scope_vlan')
+            $query->selectRaw(
+                'CASE WHEN v.vlan_group_id > 0 THEN 0'
+                . ' WHEN dom.stretch_id IS NOT NULL THEN COALESCE(v.vlan_id, 0)'
+                . ' ELSE ipam_addresses.vlan_record_id END as scope_vlan'
+            )
                 ->selectRaw('CASE WHEN v.vlan_group_id > 0 THEN v.vlan_group_id ELSE 0 END as scope_group')
-                ->selectRaw('CASE WHEN v.vlan_group_id > 0 THEN 0 ELSE ipam_addresses.site_id END as scope_site')
+                // a stretched subnet is a scope of its own: the same address
+                // inside one, in the same vlan, at two of its places, is one
+                // conflict. COALESCE rather than a CASE because a row with no
+                // domain has to read as 0, and NULL is not 0 in a group by
+                ->selectRaw('COALESCE(dom.stretch_id, 0) as scope_network')
+                ->selectRaw(
+                    'CASE WHEN v.vlan_group_id > 0 OR dom.stretch_id IS NOT NULL'
+                    . ' THEN 0 ELSE ipam_addresses.site_id END as scope_site'
+                )
                 ->selectRaw('ipam_addresses.family as family')
                 ->selectRaw('ipam_addresses.address as address')
                 // the join is over the record the address was reported under;
                 // every record of the group carries the same group id, so each
                 // address lands in its domain whichever site reported it
                 ->leftJoin('ipam_vlans as v', 'v.vlan_record_id', '=', 'ipam_addresses.vlan_record_id')
+                // and dom says whether this occurrence sits in a stretched
+                // subnet at one of that domain's places
+                // left, not inner: an occurrence outside every stretched
+                // subnet has no row in dom and must still be in the picture,
+                // scoped the way it always was
+                ->joinSub(
+                    $this->domainSubquery(),
+                    'dom',
+                    'dom.address_record_id',
+                    '=',
+                    'ipam_addresses.address_record_id',
+                    'left'
+                )
                 ->groupBy('scope_vlan')
                 ->groupBy('scope_group')
+                ->groupBy('scope_network')
                 ->groupBy('scope_site');
         }
 
@@ -197,19 +229,77 @@ class DuplicateDetector
     }
 
     /**
+     * Per address: the stretched subnet it sits in, when it sits in one.
+     *
+     * A derived table rather than a join straight onto the places, because one
+     * address can match twice — its site is a place and its room is a place —
+     * and a join that doubled its rows would report every occurrence of every
+     * address in a stretched subnet as a duplicate of itself. MIN collapses the
+     * matches to one row, which is all the scope needs.
+     *
+     * The block's own stretch_id is what makes the containment work: declaring a
+     * /16 stretched puts the id on every block below it, so an address inside a
+     * described /24 of that /16 is in the domain without a tree walk here.
+     */
+    private function domainSubquery(): \Illuminate\Database\Query\Builder
+    {
+        return DB::table('ipam_addresses as a')
+            ->join('ipam_networks as n', 'n.network_id', '=', 'a.network_id')
+            ->join('ipam_network_places as p', 'p.stretch_id', '=', 'n.stretch_id')
+            ->where('n.stretch_id', '>', 0)
+            ->where(function ($join): void {
+                // where for the kind, not whereColumn: a whereColumn with a
+                // word in it emits that word unquoted, so MySQL reads 'site' as
+                // a column name and the whole report dies on it. Only the id is a
+                // column comparison.
+                $join->where(function ($sites): void {
+                    $sites->where('p.place_type', NetworkPlace::SITE)
+                        ->whereColumn('p.place_id', '=', 'a.site_id');
+                })->orWhere(function ($rooms): void {
+                    $rooms->where('p.place_type', NetworkPlace::LOCATION)
+                        ->whereColumn('p.place_id', '=', 'a.location_id');
+                });
+            })
+            ->select('a.address_record_id')
+            ->selectRaw('MIN(p.stretch_id) as stretch_id')
+            ->groupBy('a.address_record_id');
+    }
+
+    /**
      * One finding, with the occurrences that make it up.
      *
-     * A stretched vlan carries the same address at several sites, so when the
-     * scope is a group the occurrences come from every record of the group
-     * and the site is no part of the question.
+     * Three ways an occurrence can be in scope, and the occurrences that prove
+     * it differ in each: a stretched vlan carries the same address at several
+     * sites, so a group scope takes them from every record of the group; a
+     * stretched subnet carries the same address at several places, so a domain
+     * scope takes them from every block inside the domain, in the same vlan
+     * *number* — two records of vlan 999 at two sites are two rows in the
+     * inventory and one broadcast domain once the subnet says it is carried.
      */
-    private function buildGroup(int $family, string $address, int $vlanRecordId, int $siteId, int $vlanGroupId = 0): ?DuplicateGroup
-    {
+    private function buildGroup(
+        int $family,
+        string $address,
+        int $vlanRecordId,
+        int $siteId,
+        int $vlanGroupId = 0,
+        int $stretchId = 0
+    ): ?DuplicateGroup {
         $query = Address::query()
             ->where('family', $family)
             ->where('address', $address);
 
-        if ($vlanGroupId > 0) {
+        if ($stretchId > 0) {
+            // the vlan number the grouping used is carried in the vlan column
+            // for this branch, so it is read as a number rather than an id
+            $vlanNumber = $vlanRecordId;
+
+            $query->whereHas('network', fn (Builder $inner): Builder => $inner->where('stretch_id', $stretchId))
+                ->where($this->atAnyPlaceOf($stretchId));
+
+            if ($vlanNumber > 0) {
+                $query->whereHas('vlan', fn (Builder $inner): Builder => $inner->where('vlan_id', $vlanNumber));
+            }
+        } elseif ($vlanGroupId > 0) {
             $records = Vlan::query()->where('vlan_group_id', $vlanGroupId)->pluck('vlan_record_id');
             $query->whereIn('vlan_record_id', $records);
         } else {
@@ -230,8 +320,9 @@ class DuplicateDetector
             ->where('family', $family)
             ->where('address', $address)
             ->where('vlan_group_id', $vlanGroupId)
-            ->where('site_id', $vlanGroupId > 0 ? 0 : $siteId)
-            ->when($this->useVlanScope && $vlanGroupId === 0, fn ($q) => $q->where('vlan_record_id', $vlanRecordId))
+            ->where('stretch_id', $stretchId)
+            ->where('site_id', $vlanGroupId > 0 || $stretchId > 0 ? 0 : $siteId)
+            ->when($this->useVlanScope && $vlanGroupId === 0 && $stretchId === 0, fn ($q) => $q->where('vlan_record_id', $vlanRecordId))
             ->first();
 
         $group = new DuplicateGroup(
@@ -240,12 +331,41 @@ class DuplicateDetector
             siteId: $siteId,
             vlanRecordId: $this->useVlanScope ? $vlanRecordId : null,
             vlanGroupId: $vlanGroupId,
+            stretchId: $stretchId,
+            vlanNumber: $stretchId > 0 ? $vlanRecordId : 0,
             occurrences: $occurrences,
             note: $note?->note,
             ignored: (bool) $note?->ignored,
         );
 
         return $group;
+    }
+
+    /**
+     * "at one of the places this domain reaches", as a condition.
+     *
+     * An empty list of places has to match nothing rather than everything: a
+     * domain with no places is a domain nobody finished declaring, and reporting
+     * every occurrence of an address as a duplicate of itself would be worse
+     * than reporting nothing.
+     */
+    private function atAnyPlaceOf(int $stretchId): Closure
+    {
+        $places = NetworkPlace::query()->where('stretch_id', $stretchId)->get();
+
+        return function (Builder $inner) use ($places): void {
+            if ($places->isEmpty()) {
+                $inner->whereRaw('1 = 0');
+
+                return;
+            }
+
+            foreach ($places as $place) {
+                $column = $place->place_type === NetworkPlace::SITE ? 'site_id' : 'location_id';
+
+                $inner->orWhere(fn (Builder $branch): Builder => $branch->where($column, (int) $place->place_id));
+            }
+        };
     }
 
     /**

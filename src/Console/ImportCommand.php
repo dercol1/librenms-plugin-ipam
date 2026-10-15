@@ -4,6 +4,7 @@ namespace Dercol1\LibrenmsIpam\Console;
 
 use App\Models\Plugin;
 use Dercol1\LibrenmsIpam\Import\ImportResult;
+use Dercol1\LibrenmsIpam\Import\Reconciler;
 use Dercol1\LibrenmsIpam\IpamPluginProvider;
 use Dercol1\LibrenmsIpam\Settings;
 use Dercol1\LibrenmsIpam\Support\SchemaInstaller;
@@ -44,8 +45,15 @@ class ImportCommand extends Command
         }
 
         if (! $onlyVlans) {
-            $settings->importer()->import($result);
+            $importer = $settings->importer();
+            $importer->import($result);
+            $importer->publishSeen($result);
         }
+
+        // Last, and once both halves have run: a vlan record the address side
+        // resolved an occurrence to is a vlan the estate still has, and the
+        // reconciler can only be told that after the address import has said so.
+        (new Reconciler)->run($result);
 
         $result->seconds = microtime(true) - $started;
 
@@ -84,6 +92,27 @@ class ImportCommand extends Command
 
         if ($result->vlansCreated !== []) {
             $this->line('  vlans seen: ' . count($result->vlansCreated));
+        }
+
+        // What LibreNMS stopped reporting, split by whether anything still hangs
+        // off it: nothing hanging off it was scaffolding and is gone, something
+        // hanging off it is a description now and belongs to the operator.
+        if ($result->handedOver > 0) {
+            $this->line(sprintf(
+                '  %d no longer reported by LibreNMS but still holding data: now yours, hide or delete them as you see fit',
+                $result->handedOver,
+            ));
+        }
+
+        if ($result->networksRemoved > 0 || $result->vlansRemoved > 0
+            || $result->locationsRemoved > 0 || $result->sitesRemoved > 0) {
+            $this->line(sprintf(
+                '  gone with nothing left in them: %d blocks, %d vlans, %d rooms, %d placeholder sites',
+                $result->networksRemoved,
+                $result->vlansRemoved,
+                $result->locationsRemoved,
+                $result->sitesRemoved,
+            ));
         }
 
         if ($result->ignored > 0) {

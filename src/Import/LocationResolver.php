@@ -66,8 +66,11 @@ class LocationResolver
             return $this->locations[$librenmsLocationId] = (int) $existing->location_id;
         }
 
-        // a site of its own, so the data is usable before anyone has filed it
-        $site = Site::query()->firstOrCreate(['name' => $name]);
+        // A site of its own, so the data is usable before anyone has filed it,
+        // and flagged as the placeholder it is: nobody chose this place, it is
+        // the sysLocation with a name on it, and it is not offered where an
+        // operator has to pick a real one.
+        $site = Site::query()->firstOrCreate(['name' => $name], ['auto_created' => true]);
 
         $location = Location::query()->create([
             'name' => $name,
@@ -110,19 +113,27 @@ class LocationResolver
      * currently sits in it.
      *
      * Called once per vlan import so the Sites page shows the whole estate,
-     * including the places that are empty right now.
+     * including the places that are empty right now. What it saw is published
+     * to the result, because a room LibreNMS has dropped is a row nobody will
+     * ever refresh again and has to be reconciled on purpose.
      */
-    public function syncAll(): int
+    public function syncAll(?ImportResult $result = null): int
     {
         $created = 0;
 
         foreach (DB::table('locations')->get(['id', 'location']) as $row) {
+            // the estate still has this room, whatever else it has lost: this is
+            // the evidence the reconciler uses on the ones nobody names now
+            if ($result !== null) {
+                $result->seenLocations[(string) $row->location] = true;
+            }
+
             if (Location::query()->where('name', $row->location)->exists()) {
                 continue;
             }
 
             try {
-                $site = Site::query()->firstOrCreate(['name' => $row->location]);
+                $site = Site::query()->firstOrCreate(['name' => $row->location], ['auto_created' => true]);
 
                 Location::query()->create([
                     'name' => $row->location,

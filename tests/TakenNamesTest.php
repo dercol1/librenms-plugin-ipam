@@ -73,11 +73,11 @@ class TakenNamesTest extends UnitTestCase
     {
         $this->user();
 
-        $holder = $this->liveSite('CARISP-Sede');
+        $holder = $this->liveSite('AZIENDA1-Sede');
         $renaming = $this->liveSite('Old coordinates');
 
         $request = $this->request('/plugin/ipam/sites/' . $renaming->site_id);
-        $request->merge(['name' => 'CARISP-Sede', 'description' => null, 'address' => null]);
+        $request->merge(['name' => 'AZIENDA1-Sede', 'description' => null, 'address' => null]);
 
         $response = (new SitesController)->update($request, (int) $renaming->site_id);
 
@@ -188,12 +188,12 @@ class TakenNamesTest extends UnitTestCase
     {
         $this->user();
 
-        $holder = NetworkOwner::query()->create(['name' => 'SSIS']);
+        $holder = NetworkOwner::query()->create(['name' => 'AZIENDA0']);
         Network::query()->create(['cidr' => '10.0.0.0/8', 'net_owner_id' => $holder->net_owner_id]);
         $other = NetworkOwner::query()->create(['name' => 'Someone else']);
 
         $request = $this->request('/plugin/ipam/taxonomies/net-owner/' . $other->net_owner_id);
-        $request->merge(['name' => 'SSIS', 'description' => null]);
+        $request->merge(['name' => 'AZIENDA0', 'description' => null]);
 
         $response = (new TaxonomiesController)->update($request, 'net-owner', (int) $other->net_owner_id);
 
@@ -222,15 +222,15 @@ class TakenNamesTest extends UnitTestCase
     {
         $this->user();
 
-        $holder = NetworkOwner::query()->create(['name' => 'SSIS']);
+        $holder = NetworkOwner::query()->create(['name' => 'AZIENDA0']);
         Network::query()->create(['cidr' => '10.0.0.0/8', 'net_owner_id' => $holder->net_owner_id]);
 
         $request = $this->request('/plugin/ipam/taxonomies/net-owner');
-        $request->merge(['name' => 'SSIS']);
+        $request->merge(['name' => 'AZIENDA0']);
 
         $response = (new TaxonomiesController)->store($request, 'net-owner');
 
-        $this->assertSame(1, NetworkOwner::query()->where('name', 'SSIS')->count());
+        $this->assertSame(1, NetworkOwner::query()->where('name', 'AZIENDA0')->count());
         $this->assertStringContainsString('something still uses it', (string) $response->getSession()->get('error'));
     }
 }

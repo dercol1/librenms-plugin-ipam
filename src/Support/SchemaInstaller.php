@@ -45,6 +45,8 @@ class SchemaInstaller
             'ipam_net_functions',
             'ipam_vlan_owners',
             'ipam_networks',
+            'ipam_network_stretches',
+            'ipam_network_places',
             'ipam_vlans',
             'ipam_vlan_groups',
             'ipam_vlan_locations',
@@ -95,6 +97,21 @@ class SchemaInstaller
             }
         }
 
+        // The flag that tells a real place from a placeholder: a site nobody
+        // chose, made by LocationResolver so an unfiled sysLocation still had
+        // somewhere to land. Rows that predate the flag were all made that way
+        // or by hand, and a hand made one has a name somebody typed, so the test
+        // is whether the site is still named after its own single room. This
+        // runs once, when the column appears, and never again: after that the
+        // flag is the operator's to set.
+        if (in_array('added ipam_sites.auto_created', $changes, true)) {
+            $flagged = self::flagPlaceholderSites();
+
+            if ($flagged > 0) {
+                $changes[] = "flagged $flagged placeholder site(s)";
+            }
+        }
+
         // The old one-to-one site/location link is copied into ipam_locations
         // BEFORE the column goes. Doing it the other way round drops the only
         // record of which LibreNMS location belonged to which site, and the
@@ -128,6 +145,27 @@ class SchemaInstaller
     }
 
     /**
+     * Replace the scope unique on ipam_duplicates with a wider one.
+     *
+     * The identity of a verdict is "this address, in this scope": a vlan
+     * record, a site, and now also the domain a stretched vlan or a stretched
+     * network puts it in. Every one of those keys grew a column, so an install
+     * that already carries the narrower unique has to have it swapped, or the
+     * same address duplicated in two different domains could not carry a
+     * verdict each.
+     *
+     * Only ever called from a column closure, which runs only when the column
+     * is being added: a fresh table is created with the wide unique already.
+     *
+     * @param  list<string>  $columns
+     */
+    private static function rebuildDuplicatesScopeUnique(Blueprint $table, array $columns): void
+    {
+        $table->dropUnique('ipam_duplicates_scope_unique');
+        $table->unique($columns, 'ipam_duplicates_scope_unique');
+    }
+
+    /**
      * Bring a table that predates a column up to date.
      *
      * Uses the fluent column methods rather than addColumn(), which wants the
@@ -154,10 +192,23 @@ class SchemaInstaller
                 'address' => function (Blueprint $t): void {
                     $t->string('address', 255)->nullable();
                 },
+                'auto_created' => function (Blueprint $t): void {
+                    $t->boolean('auto_created')->default(false)->index('ipam_sites_auto_created_index');
+                },
             ],
             'ipam_networks' => [
                 'ignored' => function (Blueprint $t): void {
                     $t->boolean('ignored')->default(false)->index('ipam_networks_ignored_index');
+                },
+                'location_id' => function (Blueprint $t): void {
+                    $t->unsignedInteger('location_id')
+                        ->default(0)
+                        ->index('ipam_networks_location_id_index');
+                },
+                'stretch_id' => function (Blueprint $t): void {
+                    $t->unsignedInteger('stretch_id')
+                        ->default(0)
+                        ->index('ipam_networks_stretch_index');
                 },
             ],
             'ipam_vlans' => [
@@ -171,19 +222,15 @@ class SchemaInstaller
             'ipam_duplicates' => [
                 'vlan_group_id' => function (Blueprint $t): void {
                     $t->unsignedInteger('vlan_group_id')->default(0)->index('ipam_duplicates_group_index');
-
-                    // The identity of a verdict gains the group, so the old
-                    // four column unique has to become the five column one, or
-                    // the same address duplicated inside two different
-                    // stretched vlans could not carry a verdict each. This
-                    // closure runs only when the column is being added, which
-                    // is only on an upgrade: a fresh table is created with the
-                    // new unique already in place.
-                    $t->dropUnique('ipam_duplicates_scope_unique');
-                    $t->unique(
-                        ['family', 'address', 'vlan_record_id', 'site_id', 'vlan_group_id'],
-                        'ipam_duplicates_scope_unique'
-                    );
+                    self::rebuildDuplicatesScopeUnique($t, [
+                        'family', 'address', 'vlan_record_id', 'site_id', 'vlan_group_id',
+                    ]);
+                },
+                'stretch_id' => function (Blueprint $t): void {
+                    $t->unsignedInteger('stretch_id')->default(0)->index('ipam_duplicates_stretch_index');
+                    self::rebuildDuplicatesScopeUnique($t, [
+                        'family', 'address', 'vlan_record_id', 'site_id', 'vlan_group_id', 'stretch_id',
+                    ]);
                 },
             ],
         ];
@@ -214,6 +261,38 @@ class SchemaInstaller
     }
 
     /**
+     * Mark the sites that are only a sysLocation with a name on it, once.
+     *
+     * A placeholder is recognisable without having been told: it holds exactly
+     * one room and that room is called the same thing, which is what
+     * LocationResolver makes when nobody has filed the string yet. A site an
+     * operator built — renamed, given an address, holding several rooms — fails
+     * at least one of those and stays defined.
+     */
+    private static function flagPlaceholderSites(): int
+    {
+        $sites = DB::table('ipam_sites')
+            ->select('site_id', 'name')
+            ->whereNull('description')
+            ->where(function ($query): void {
+                $query->whereNull('address')->orWhere('address', '');
+            })
+            ->get();
+
+        $flagged = 0;
+
+        foreach ($sites as $site) {
+            $rooms = DB::table('ipam_locations')->where('site_id', $site->site_id)->pluck('name');
+
+            if ($rooms->count() === 1 && (string) $rooms->first() === (string) $site->name) {
+                DB::table('ipam_sites')->where('site_id', $site->site_id)->update(['auto_created' => 1]);
+                $flagged++;
+            }
+        }
+
+        return $flagged;
+    }
+
     /**
      * Flag the rows that already sit in an excluded range, once.
      *
@@ -318,13 +397,23 @@ class SchemaInstaller
     public static function columns(string $table): array
     {
         return match ($table) {
-            'ipam_sites' => ['site_id', 'name', 'description', 'address', 'created_at', 'updated_at'],
+            'ipam_sites' => [
+                'site_id', 'name', 'description', 'address', 'auto_created',
+                'created_at', 'updated_at',
+            ],
             'ipam_locations' => ['location_id', 'site_id', 'name', 'created_at', 'updated_at'],
             'ipam_net_owners', 'ipam_net_functions', 'ipam_vlan_owners' => self::taxonomyColumns($table),
             'ipam_networks' => [
                 'network_id', 'parent_id', 'cidr', 'family', 'network', 'prefixlen',
-                'packed_start', 'packed_end', 'description', 'site_id', 'vlan_id',
-                'net_owner_id', 'net_function_id', 'auto_created', 'ignored',
+                'packed_start', 'packed_end', 'description', 'site_id', 'location_id',
+                'vlan_id', 'net_owner_id', 'net_function_id', 'auto_created', 'ignored',
+                'stretch_id', 'created_at', 'updated_at',
+            ],
+            'ipam_network_stretches' => [
+                'stretch_id', 'network_id', 'name', 'description', 'created_at', 'updated_at',
+            ],
+            'ipam_network_places' => [
+                'stretch_place_id', 'stretch_id', 'place_type', 'place_id',
                 'created_at', 'updated_at',
             ],
             'ipam_vlans' => [
@@ -350,7 +439,8 @@ class SchemaInstaller
             ],
             'ipam_duplicates' => [
                 'duplicate_id', 'family', 'address', 'vlan_record_id', 'site_id',
-                'vlan_group_id', 'ignored', 'note', 'updated_by', 'created_at', 'updated_at',
+                'vlan_group_id', 'stretch_id', 'ignored', 'note', 'updated_by',
+                'created_at', 'updated_at',
             ],
             default => [],
         };
@@ -407,6 +497,8 @@ class SchemaInstaller
             'ipam_net_functions' => self::netFunctions(...),
             'ipam_vlan_owners' => self::vlanOwners(...),
             'ipam_networks' => self::networks(...),
+            'ipam_network_stretches' => self::networkStretches(...),
+            'ipam_network_places' => self::networkPlaces(...),
             'ipam_vlans' => self::vlans(...),
             'ipam_vlan_groups' => self::vlanGroups(...),
             'ipam_vlan_locations' => self::vlanLocations(...),
@@ -433,9 +525,16 @@ class SchemaInstaller
         $table->string('name', 128);
         $table->string('description', 255)->nullable();
         $table->string('address', 255)->nullable();
+        // A site is an operator's decision, so most of them are "defined". The
+        // exceptions are the placeholders LocationResolver makes so a sysLocation
+        // nobody has filed yet is still somewhere: a site named after its own
+        // single room, which is not a place anybody chose. Stretching a network
+        // offers the defined ones only — a placeholder is not a destination.
+        $table->boolean('auto_created')->default(false);
         $table->timestamps();
 
         $table->unique('name', 'ipam_sites_name_unique');
+        $table->index('auto_created', 'ipam_sites_auto_created_index');
     }
 
     /**
@@ -518,6 +617,14 @@ class SchemaInstaller
         // says nothing about the estate. Hidden blocks also hide the addresses
         // under them, so one click clears a whole family of noise.
         $table->boolean('ignored')->default(false);
+        // the room a segment is homed in, when that is finer than the site: a
+        // subnet that only exists in one cabinet still belongs to the site
+        $table->unsignedInteger('location_id')->default(0);
+        // 0 = this range lives wherever its addresses live. Above it: the range
+        // is one domain carried at layer 2 across the places listed on the
+        // domain, and this is that domain's id. Set on the whole subtree when an
+        // operator declares it, because a /24 inside a stretched /16 is in it.
+        $table->unsignedInteger('stretch_id')->default(0);
         $table->timestamps();
 
         $table->unique('cidr', 'ipam_networks_cidr_unique');
@@ -525,6 +632,52 @@ class SchemaInstaller
         $table->index('parent_id', 'ipam_networks_parent_id_index');
         $table->index('site_id', 'ipam_networks_site_id_index');
         $table->index('vlan_id', 'ipam_networks_vlan_id_index');
+        $table->index('location_id', 'ipam_networks_location_id_index');
+        $table->index('stretch_id', 'ipam_networks_stretch_index');
+    }
+
+    /**
+     * One subnet carried across places at layer 2.
+     *
+     * The mirror of a vlan group, one level down: a vlan stretched across sites
+     * is a broadcast domain, a network stretched across them is a subnet that
+     * exists unchanged at more than one of them. What places it reaches is on
+     * the places table, and what carries it — dark fibre, an E-Line, QinQ
+     * inside an outer 802.1ad tag — is the description here, because no device
+     * reports it and an operator would otherwise keep it nowhere.
+     */
+    private static function networkStretches(Blueprint $table): void
+    {
+        $table->increments('stretch_id');
+        $table->unsignedInteger('network_id');
+        $table->string('name', 128)->nullable();
+        $table->text('description')->nullable();
+        $table->timestamps();
+
+        // one domain per block: a second stretch of the same range is the same
+        // statement, not a new one
+        $table->unique('network_id', 'ipam_network_stretches_network_unique');
+    }
+
+    /**
+     * Where one stretched subnet is.
+     *
+     * A place is a site or a single room, never both: a whole site when the
+     * segment reaches every room of it, a room when it only reaches that one.
+     * The discriminator is a string rather than two nullable columns because a
+     * unique index over nullable columns would accept the same place twice,
+     * which is the one thing this table has to prevent.
+     */
+    private static function networkPlaces(Blueprint $table): void
+    {
+        $table->increments('stretch_place_id');
+        $table->unsignedInteger('stretch_id');
+        $table->string('place_type', 16);
+        $table->unsignedInteger('place_id');
+        $table->timestamps();
+
+        $table->unique(['stretch_id', 'place_type', 'place_id'], 'ipam_network_places_unique');
+        $table->index(['place_type', 'place_id'], 'ipam_network_places_place_index');
     }
 
     /**
@@ -707,6 +860,9 @@ class SchemaInstaller
         // a verdict on a stretched vlan's conflict: the identity of the vlan
         // side is the group, not any one record, so the annotation carries it
         $table->unsignedInteger('vlan_group_id')->default(0);
+        // and the same for a stretched subnet, whose domain replaces both the
+        // vlan record and the site as the scope the verdict is about
+        $table->unsignedInteger('stretch_id')->default(0);
 
         $table->boolean('ignored')->default(false);
         $table->string('note', 255)->nullable();
@@ -714,7 +870,7 @@ class SchemaInstaller
         $table->timestamps();
 
         $table->unique(
-            ['family', 'address', 'vlan_record_id', 'site_id', 'vlan_group_id'],
+            ['family', 'address', 'vlan_record_id', 'site_id', 'vlan_group_id', 'stretch_id'],
             'ipam_duplicates_scope_unique'
         );
     }

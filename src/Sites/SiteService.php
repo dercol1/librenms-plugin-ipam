@@ -4,6 +4,8 @@ namespace Dercol1\LibrenmsIpam\Sites;
 
 use Dercol1\LibrenmsIpam\Models\Location;
 use Dercol1\LibrenmsIpam\Models\Site;
+use Dercol1\LibrenmsIpam\Models\Vlan;
+use Dercol1\LibrenmsIpam\Vlans\VlanCollapser;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -193,19 +195,24 @@ class SiteService
             ->whereIn('site_id', [$keepSiteId, $dropSiteId])
             ->groupBy('vlan_id', 'vlan_domain')
             ->havingRaw('COUNT(*) > 1')
-            ->pluck('vlan_id')
-            ->all();
+            ->get();
 
         $moved['ipam_vlans_merged'] = 0;
         $moved['ipam_addresses_repointed'] = 0;
 
-        foreach ($collisions as $vlanId) {
-            $winner = DB::table('ipam_vlans')
-                ->where('vlan_id', $vlanId)
+        $collapser = new VlanCollapser;
+
+        foreach ($collisions as $collision) {
+            // Both halves of the key, not just the id: vlan 999 domain 1 and
+            // vlan 999 domain 2 are different broadcast domains and must not be
+            // collapsed into each other by a merge of two sites.
+            $winner = Vlan::query()
+                ->where('vlan_id', (int) $collision->vlan_id)
+                ->where('vlan_domain', (int) $collision->vlan_domain)
                 ->whereIn('site_id', [$keepSiteId, $dropSiteId])
                 // a described record beats an auto created one, then the older,
                 // so the survivor is the one an operator has put work into
-                ->orderByDesc('auto_created')
+                ->orderBy('auto_created')
                 ->orderBy('vlan_record_id')
                 ->first();
 
@@ -213,23 +220,18 @@ class SiteService
                 continue;
             }
 
-            $losers = DB::table('ipam_vlans')
-                ->where('vlan_id', $vlanId)
+            $losers = Vlan::query()
+                ->where('vlan_id', (int) $collision->vlan_id)
+                ->where('vlan_domain', (int) $collision->vlan_domain)
                 ->whereIn('site_id', [$keepSiteId, $dropSiteId])
                 ->where('vlan_record_id', '!=', $winner->vlan_record_id)
-                ->pluck('vlan_record_id')
-                ->all();
+                ->get();
 
             foreach ($losers as $loser) {
-                $moved['ipam_addresses_repointed'] += DB::table('ipam_addresses')
-                    ->where('vlan_record_id', $loser)
-                    ->update(['vlan_record_id' => $winner->vlan_record_id]);
-
-                DB::table('ipam_vlan_locations')->where('vlan_record_id', $loser)->delete();
-                DB::table('ipam_vlan_names')->where('vlan_record_id', $loser)->delete();
-                DB::table('ipam_vlans')->where('vlan_record_id', $loser)->delete();
+                $collapsed = $collapser->collapse($winner, $loser);
 
                 $moved['ipam_vlans_merged']++;
+                $moved['ipam_addresses_repointed'] += $collapsed['addresses'];
             }
         }
 

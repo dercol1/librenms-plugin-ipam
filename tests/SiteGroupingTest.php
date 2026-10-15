@@ -30,12 +30,12 @@ class SiteGroupingTest extends UnitTestCase
 
         $this->seedLocation('Galazzano', 'Galazzano');
         $this->seedLocation('Galazzano Sala B', 'Galazzano Sala B');
-        $this->seedLocation('SSIS Galazzano (Sala server A)', 'SSIS Galazzano (Sala server A)');
+        $this->seedLocation('AZIENDA0 Galazzano (Sala server A)', 'AZIENDA0 Galazzano (Sala server A)');
         $this->seedLocation('Piazzetta del Titano', 'Piazzetta del Titano');
         $this->seedLocation('Piazzetta del Titano, Citta, 47890', 'Piazzetta del Titano, Citta, 47890');
         $this->seedLocation('Roma', 'Roma');
         // a coordinate string names no place, and must not group with anything
-        $this->seedLocation('[43.93995208329548, 12.449556043363364]', '[43.93995208329548, 12.449556043363364]');
+        $this->seedLocation('[43.93755408329548, 12.449556043363364]', '[43.93755408329548, 12.449556043363364]');
     }
 
     /**
@@ -69,7 +69,7 @@ class SiteGroupingTest extends UnitTestCase
         ))[0];
 
         $this->assertSame(
-            ['Galazzano', 'Galazzano Sala B', 'SSIS Galazzano (Sala server A)'],
+            ['Galazzano', 'Galazzano Sala B', 'AZIENDA0 Galazzano (Sala server A)'],
             $galazzano['sites'],
             'the proposal says which sites disappear, in a stable order'
         );

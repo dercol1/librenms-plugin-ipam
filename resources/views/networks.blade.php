@@ -123,6 +123,13 @@
                                 @else
                                     <span class="label label-info tw:ml-1">{{ __('ipam::ipam.networks.described') }}</span>
                                 @endif
+                                @if ($block->stretch_id > 0)
+                                    <span class="label label-info tw:ml-1"
+                                          title="{{ (($stretches ?? [])[$block->network_id]['domain']['description'] ?? null) ?: __('ipam::ipam.networks.stretch_intro') }}">
+                                        <i class="fa fa-arrows-left-right-to-line" aria-hidden="true"></i>
+                                        {{ __('ipam::ipam.networks.stretched') }}
+                                    </span>
+                                @endif
                             </td>
                             <td>
                                 @include('ipam::partials.site-cell', [
@@ -133,6 +140,12 @@
                                 @if ($block->vlan_id)
                                     <div class="tw:text-xs tw:text-gray-500">
                                         {{ __('ipam::ipam.networks.vlan') }} {{ $block->vlan_id }}
+                                    </div>
+                                @endif
+                                @if ($block->location_id > 0)
+                                    <div class="tw:text-xs tw:text-gray-500">
+                                        <i class="fa fa-map-marker" aria-hidden="true"></i>
+                                        {{ $directory->roomName((int) $block->location_id) }}
                                     </div>
                                 @endif
                             </td>
@@ -158,7 +171,7 @@
                                         <input type="hidden" name="network_id" value="{{ $block->network_id }}">
 
                                         <div class="row">
-                                            <div class="form-group col-md-3">
+                                            <div class="form-group col-md-2">
                                                 <label>{{ __('ipam::ipam.networks.site') }}</label>
                                                 <select name="site_id" class="form-control form-control-sm"
                                                         data-fill="ipam-options-sites" data-selected="{{ $block->site_id }}">
@@ -166,6 +179,13 @@
                                                 </select>
                                             </div>
                                             <div class="form-group col-md-2">
+                                                <label>{{ __('ipam::ipam.networks.room') }}</label>
+                                                <select name="location_id" class="form-control form-control-sm"
+                                                        data-fill="ipam-options-rooms" data-selected="{{ $block->location_id }}">
+                                                    <option value="0">--</option>
+                                                </select>
+                                            </div>
+                                            <div class="form-group col-md-1">
                                                 <label>{{ __('ipam::ipam.networks.vlan') }}</label>
                                                 <input type="number" name="vlan_id" class="form-control form-control-sm"
                                                        min="1" max="4094" value="{{ $block->vlan_id ?: '' }}">
@@ -207,6 +227,81 @@
 
                                         <button type="submit" class="btn btn-primary btn-sm">{{ __('ipam::ipam.networks.save') }}</button>
                                     </form>
+
+                                    {{-- one subnet at more than one place: an operator states which,
+                                         and how it gets there, because no device reports either.
+                                         The rule that reads it back is in the collision detector --}}
+                                    <hr>
+                                    <strong><i class="fa fa-arrows-left-right-to-line" aria-hidden="true"></i> {{ __('ipam::ipam.networks.stretch_title') }}</strong>
+                                    <p class="text-muted small">{{ __('ipam::ipam.networks.stretch_intro') }}</p>
+
+                                    @php($stretch = ($stretches ?? [])[$block->network_id] ?? ['domain' => null, 'candidates' => []])
+
+                                    @if ($stretch['domain'] !== null)
+                                        <p class="tw:mb-1">
+                                            <span class="label label-info">{{ __('ipam::ipam.networks.stretched') }}</span>
+                                            <span class="tw:ml-2">{{ implode(' + ', $stretch['domain']['places']) }}</span>
+                                        </p>
+
+                                        <div class="tw:flex tw:flex-wrap tw:items-end tw:gap-2">
+                                            <form method="post"
+                                                  action="@include('ipam::partials.action', ['route' => 'ipam.networks.stretch.describe', 'params' => [$block->network_id], 'fallback' => 'plugin/ipam/networks/' . $block->network_id . '/stretch/describe'])"
+                                                  class="tw:flex tw:items-end tw:gap-2 tw:m-0" style="flex: 1;">
+                                                @csrf
+                                                <div class="form-group tw:mb-0" style="flex: 1;">
+                                                    <label class="sr-only">{{ __('ipam::ipam.networks.stretch_note') }}</label>
+                                                    <input type="text" name="description" class="form-control form-control-sm"
+                                                           maxlength="1000" value="{{ $stretch['domain']['description'] }}"
+                                                           placeholder="{{ __('ipam::ipam.networks.stretch_note') }}">
+                                                </div>
+                                                <button type="submit" class="btn btn-default btn-sm">{{ __('ipam::ipam.vlans.save_description') }}</button>
+                                            </form>
+                                            <form method="post" action="@include('ipam::partials.action', ['route' => 'ipam.networks.unstretch', 'params' => [$block->network_id], 'fallback' => 'plugin/ipam/networks/' . $block->network_id . '/unstretch'])" class="tw:m-0">
+                                                @csrf
+                                                <button type="submit" class="btn btn-danger btn-sm">{{ __('ipam::ipam.vlans.unlink') }}</button>
+                                            </form>
+                                        </div>
+                                    @endif
+
+                                    @if ($stretch['candidates'] !== [])
+                                        <form method="post" action="@include('ipam::partials.action', ['route' => 'ipam.networks.stretch', 'params' => [$block->network_id], 'fallback' => 'plugin/ipam/networks/' . $block->network_id . '/stretch'])" class="tw:mt-2">
+                                            @csrf
+                                            <label class="tw:block tw:text-xs tw:uppercase tw:tracking-wide tw:text-gray-500">{{ __('ipam::ipam.vlans.link_with') }}</label>
+                                            @foreach ($stretch['candidates'] as $candidate)
+                                                <label class="form-check tw:mb-1">
+                                                    <input type="checkbox" name="places[]" value="{{ $candidate['key'] }}" @checked($candidate['taken'])>
+                                                    {{ $candidate['name'] }}
+                                                    <span class="tw:text-xs tw:text-gray-500">
+                                                        ({{ $candidate['type'] === 'location' ? __('ipam::ipam.networks.room') : $candidate['rooms'] . ' ' . __('ipam::ipam.networks.stretched_sites') }})
+                                                    </span>
+                                                </label>
+                                            @endforeach
+                                            <div class="tw:flex tw:items-end tw:gap-2 tw:mt-2">
+                                                <div class="form-group tw:mb-0" style="flex: 1;">
+                                                    <input type="text" name="description" class="form-control form-control-sm"
+                                                           maxlength="1000"
+                                                           value="{{ $stretch['domain']['description'] ?? '' }}"
+                                                           placeholder="{{ __('ipam::ipam.networks.stretch_note') }}">
+                                                </div>
+                                                <button type="submit" class="btn btn-default btn-sm">{{ __('ipam::ipam.networks.stretch_go') }}</button>
+                                            </div>
+                                        </form>
+                                    @elseif ($stretch['domain'] === null)
+                                        <p class="text-muted small tw:mb-0">{{ __('ipam::ipam.networks.no_candidates') }}</p>
+                                    @endif
+
+                                    @if ($block->isManual())
+                                        <hr>
+                                        <form method="post" action="@include('ipam::partials.action', ['route' => 'ipam.networks.destroy', 'params' => [$block->network_id], 'fallback' => 'plugin/ipam/networks/' . $block->network_id])"
+                                              onsubmit="return confirm('{{ __('ipam::ipam.networks.delete_confirm') }}');">
+                                            @csrf
+                                            @method('DELETE')
+                                            <button type="submit" class="btn btn-danger btn-sm">
+                                                {{ __('ipam::ipam.networks.delete') }}
+                                            </button>
+                                            <span class="text-muted small tw:ml-2">{{ __('ipam::ipam.networks.delete_hint') }}</span>
+                                        </form>
+                                    @endif
                                 </td>
                             </tr>
                         @endcan
@@ -245,6 +340,15 @@
                             <select name="site_id" class="form-control form-control-sm">
                                 <option value="0">-- {{ __('ipam::ipam.networks.inherit_hint') }} --</option>
                                 @foreach ($options['sites'] as $id => $name)
+                                    <option value="{{ $id }}">{{ $name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>{{ __('ipam::ipam.networks.room') }}</label>
+                            <select name="location_id" class="form-control form-control-sm">
+                                <option value="0">--</option>
+                                @foreach ($options['rooms'] ?? [] as $id => $name)
                                     <option value="{{ $id }}">{{ $name }}</option>
                                 @endforeach
                             </select>

@@ -159,6 +159,11 @@ class SitesController extends Controller
             'name' => $data['name'],
             'description' => $data['description'] ?? null,
             'address' => $data['address'] ?? null,
+            // An operator has written something about this place, so from now on
+            // it is one they defined. It stops being a sysLocation with a name
+            // on it, which is what a placeholder is, and it becomes a place an
+            // operator can stretch a subnet to.
+            'auto_created' => false,
         ]);
 
         $message = $release === 'released'
@@ -245,7 +250,9 @@ class SitesController extends Controller
         $service = new SiteService;
         $siteIds = array_values(array_unique(array_map('intval', $data['site_ids'])));
 
-        $target = Site::query()->firstOrCreate(['name' => $data['name']]);
+        // the operator is naming this place in the act of accepting the
+        // proposal, so it is one they defined
+        $target = Site::query()->firstOrCreate(['name' => $data['name']], ['auto_created' => false]);
         $targetId = (int) $target->site_id;
 
         $folded = $service->foldInto($targetId, $siteIds);

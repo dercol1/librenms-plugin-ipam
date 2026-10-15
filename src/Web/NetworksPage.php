@@ -2,6 +2,7 @@
 
 namespace Dercol1\LibrenmsIpam\Web;
 
+use Dercol1\LibrenmsIpam\Models\Location;
 use Dercol1\LibrenmsIpam\Models\Network;
 use Dercol1\LibrenmsIpam\Models\NetworkFunction;
 use Dercol1\LibrenmsIpam\Models\NetworkOwner;
@@ -118,7 +119,7 @@ final class NetworksPage
                 'title' => __('ipam::ipam.page_titles.networks'),
                 'missing' => $missing,
                 'networks' => null,
-                'options' => ['sites' => [], 'owners' => [], 'functions' => []],
+                'options' => ['sites' => [], 'rooms' => [], 'owners' => [], 'functions' => []],
                 'directory' => SiteDirectory::load(),
                 'blocksPerSite' => [],
                 'addressesPerSite' => [],
@@ -128,6 +129,12 @@ final class NetworksPage
         }
 
         $directory = SiteDirectory::load();
+
+        // The rooms, for the two forms that can attribute a range to one. A site
+        // says which building, a room which cabinet: a segment carried to one
+        // cabinet of a site is at the site but not in the building's room.
+        $rooms = Location::query()->orderBy('name')->pluck('name', 'location_id')
+            ->map(fn ($name): string => (string) $name)->all();
 
         // counted per site so the list can say how much of the estate each row
         // holds, and how much of it still needs describing
@@ -149,6 +156,7 @@ final class NetworksPage
             'networks' => self::query($request)->paginate($settings->perPage())->withQueryString(),
             'options' => [
                 'sites' => $directory->options(),
+                'rooms' => $rooms,
                 'owners' => NetworkOwner::query()->orderBy('name')->pluck('name', 'net_owner_id'),
                 'functions' => NetworkFunction::query()->orderBy('name')->pluck('name', 'net_function_id'),
             ],

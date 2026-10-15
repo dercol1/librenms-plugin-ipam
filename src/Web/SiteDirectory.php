@@ -21,10 +21,12 @@ final class SiteDirectory
     /**
      * @param  array<int, string>  $names  site id to name
      * @param  array<int, list<string>>  $rooms  site id to the location names
+     * @param  array<int, string>  $roomNames  location id to name
      */
     private function __construct(
         private readonly array $names,
         private readonly array $rooms,
+        private readonly array $roomNames,
     ) {}
 
     public static function load(): self
@@ -32,14 +34,17 @@ final class SiteDirectory
         $names = Site::query()->orderBy('name')->pluck('name', 'site_id')->all();
 
         $rooms = [];
+        $roomNames = [];
 
-        foreach (Location::query()->orderBy('name')->get(['site_id', 'name']) as $location) {
+        foreach (Location::query()->orderBy('name')->get(['location_id', 'site_id', 'name']) as $location) {
             $rooms[(int) $location->site_id][] = (string) $location->name;
+            $roomNames[(int) $location->location_id] = (string) $location->name;
         }
 
         return new self(
             array_map(fn ($name): string => (string) $name, $names),
-            $rooms
+            $rooms,
+            $roomNames
         );
     }
 
@@ -54,6 +59,14 @@ final class SiteDirectory
     public function rooms(int $siteId): array
     {
         return $this->rooms[$siteId] ?? [];
+    }
+
+    /**
+     * One room by id, for the rows that name it.
+     */
+    public function roomName(int $locationId): string
+    {
+        return $this->roomNames[$locationId] ?? '';
     }
 
     public function roomCount(int $siteId): int

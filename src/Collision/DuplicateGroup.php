@@ -20,6 +20,8 @@ class DuplicateGroup
      * @param  int  $siteId  the site both occurrences claim to be in, 0 unknown
      * @param  int|null  $vlanRecordId  the vlan, or null when vlan scoping is off
      * @param  int  $vlanGroupId  the layer 2 domain when the vlan is stretched across sites, 0 otherwise
+     * @param  int  $stretchId  the layer 2 domain when the subnet is stretched across places, 0 otherwise
+     * @param  int  $vlanNumber  the 802.1q id a stretched subnet is scoped by, 0 when it is not the scope
      * @param  Collection<int, Address>  $occurrences
      */
     public function __construct(
@@ -28,6 +30,8 @@ class DuplicateGroup
         public readonly int $siteId,
         public readonly ?int $vlanRecordId,
         public readonly int $vlanGroupId,
+        public readonly int $stretchId,
+        public readonly int $vlanNumber,
         public readonly mixed $occurrences,
         public readonly ?string $note = null,
         public readonly bool $ignored = false,
@@ -98,6 +102,7 @@ class DuplicateGroup
             'site_id' => $this->siteId,
             'vlan_record_id' => $this->vlanRecordId,
             'vlan_group_id' => $this->vlanGroupId,
+            'stretch_id' => $this->stretchId,
             'occurrences' => $this->count(),
             'devices' => $this->deviceCount(),
             'crosses_devices' => $this->crossesDevices(),

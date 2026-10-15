@@ -233,6 +233,13 @@
                                                 </select>
                                             </div>
                                             <div class="form-group col-md-2">
+                                                <label>{{ __('ipam::ipam.networks.room') }}</label>
+                                                <select name="location_id" class="form-control form-control-sm"
+                                                        data-fill="ipam-options-rooms" data-selected="{{ $address->location_id }}">
+                                                    <option value="0">--</option>
+                                                </select>
+                                            </div>
+                                            <div class="form-group col-md-2">
                                                 <label>{{ __('ipam::ipam.addresses.vlan') }}</label>
                                                 <select name="vlan_record_id" class="form-control form-control-sm"
                                                         data-fill="ipam-options-vlans" data-selected="{{ $address->vlan_record_id }}">
@@ -277,6 +284,18 @@
 
                                         <button type="submit" class="btn btn-primary btn-sm">{{ __('ipam::ipam.addresses.save') }}</button>
                                     </form>
+
+                                    @if ($address->isManual())
+                                        <form method="post"
+                                              action="@include('ipam::partials.action', ['route' => 'ipam.addresses.destroy', 'params' => [$address->address_record_id], 'fallback' => 'plugin/ipam/addresses/' . $address->address_record_id])"
+                                              onsubmit="return confirm('{{ __('ipam::ipam.addresses.delete_confirm') }}');"
+                                              class="tw:mt-2">
+                                            @csrf
+                                            @method('DELETE')
+                                            <button type="submit" class="btn btn-danger btn-xs">{{ __('ipam::ipam.addresses.delete') }}</button>
+                                            <span class="text-muted small tw:ml-1">{{ __('ipam::ipam.addresses.delete_hint') }}</span>
+                                        </form>
+                                    @endif
                                 </td>
                             </tr>
                         @endcan
@@ -524,6 +543,15 @@
                             </select>
                         </div>
                         <div class="form-group col-md-2">
+                            <label>{{ __('ipam::ipam.networks.room') }}</label>
+                            <select name="location_id" class="form-control form-control-sm">
+                                <option value="0">--</option>
+                                @foreach ($options['rooms'] as $id => $name)
+                                    <option value="{{ $id }}">{{ $name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="form-group col-md-2">
                             <label>{{ __('ipam::ipam.addresses.vlan') }}</label>
                             <select name="vlan_record_id" class="form-control form-control-sm">
                                 <option value="0">--</option>
@@ -592,6 +620,15 @@
                             <select name="site_id" class="form-control form-control-sm">
                                 <option value="0">--</option>
                                 @foreach ($options['sites'] as $id => $name)
+                                    <option value="{{ $id }}">{{ $name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>{{ __('ipam::ipam.networks.room') }}</label>
+                            <select name="location_id" class="form-control form-control-sm">
+                                <option value="0">--</option>
+                                @foreach ($options['rooms'] as $id => $name)
                                     <option value="{{ $id }}">{{ $name }}</option>
                                 @endforeach
                             </select>

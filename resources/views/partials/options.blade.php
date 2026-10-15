@@ -19,6 +19,12 @@
     @endforeach
 </template>
 
+<template id="ipam-options-rooms">
+    @foreach ($options['rooms'] ?? [] as $id => $name)
+        <option value="{{ $id }}">{{ $name }}</option>
+    @endforeach
+</template>
+
 <template id="ipam-options-vlans">
     @foreach ($options['vlans'] ?? [] as $id => $label)
         <option value="{{ $id }}">{{ $label }}</option>

@@ -44,6 +44,25 @@ class AddressImporter
      */
     public LocationResolver $resolver;
 
+    /**
+     * The blocks this run walked over, by id: the evidence the reconciler uses
+     * to tell a range the estate still has from one nothing points at.
+     *
+     * @var array<int, bool>
+     */
+    private array $seenNetworks = [];
+
+    /**
+     * The vlan records this run resolved an occurrence to, by id.
+     *
+     * Same evidence for the other half: ports_vlans names a vlan the vlans
+     * table has no row for, and the record made for it is one the estate still
+     * has — the reconciler must not mistake it for one the devices dropped.
+     *
+     * @var array<int, bool>
+     */
+    private array $seenVlanRecords = [];
+
     public function __construct(
         private readonly bool $importIpv4 = true,
         private readonly bool $importIpv6 = true,
@@ -243,6 +262,7 @@ class AddressImporter
 
             if ($portVlan !== null) {
                 $vlanRecordId = (int) $portVlan->vlan_record_id;
+                $this->seenVlanRecords[$vlanRecordId] = true;
 
                 if ($siteId === 0) {
                     $siteId = (int) $portVlan->site_id;
@@ -293,7 +313,16 @@ class AddressImporter
             ->where('site_id', $siteId)
             ->first();
 
-        return $record === null ? 0 : (int) $record->vlan_record_id;
+        if ($record === null) {
+            return 0;
+        }
+
+        // Deliberately not marked as seen: this is the record a *block*
+        // declares, and a block is somebody's description. What the devices
+        // report is what vlanForPort marks, and the reconciler is asking about
+        // the devices — otherwise a vlan the switches dropped would look alive
+        // for as long as an operator keeps naming it on a range.
+        return (int) $record->vlan_record_id;
     }
 
     /**
@@ -385,6 +414,11 @@ class AddressImporter
         sort($prefixLens);
 
         $parentId = 0;
+        // A range created inside a stretched one is in that domain without the
+        // operator saying it again: the block above it was stretched, and this
+        // is the block below it. Carried along the walk rather than looked up
+        // afterwards, because the row does not exist yet at this point.
+        $parentStretchId = 0;
 
         foreach ($prefixLens as $prefixLen) {
             $candidate = $cidr->withPrefixLen($prefixLen);
@@ -393,6 +427,8 @@ class AddressImporter
 
             if ($existing !== null) {
                 $parentId = (int) $existing;
+                $parentStretchId = (int) Network::query()->whereKey($parentId)->value('stretch_id');
+                $this->seenNetworks[(int) $existing] = true;
 
                 continue;
             }
@@ -406,6 +442,7 @@ class AddressImporter
                 'net_owner_id' => 0,
                 'net_function_id' => 0,
                 'auto_created' => true,
+                'stretch_id' => $parentStretchId,
                 // A block entirely inside an excluded range starts ignored, so
                 // 127.0.0.0/8 does not sit in the map as a block nobody wants.
                 // Partially excluded blocks stay visible: the range is real, only
@@ -415,7 +452,20 @@ class AddressImporter
 
             $result->networksCreated[$prefixLen] = ($result->networksCreated[$prefixLen] ?? 0) + 1;
             $parentId = (int) $created->network_id;
+            $this->seenNetworks[$parentId] = true;
         }
+    }
+
+    /**
+     * Hand the evidence over to the reconciler, which runs once both importers
+     * are done: a vlan record the address side resolved to is a record the
+     * estate still has, and reconciling before the address import would not know
+     * that yet.
+     */
+    public function publishSeen(ImportResult $result): void
+    {
+        $result->seenNetworks = $this->seenNetworks;
+        $result->seenVlanRecords = $this->seenVlanRecords + $result->seenVlanRecords;
     }
 
     private function countUnscoped(Address $record, ImportResult $result): void

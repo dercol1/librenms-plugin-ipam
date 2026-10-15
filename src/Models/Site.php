@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string $name
  * @property string|null $description
  * @property string|null $address
+ * @property bool $auto_created
  */
 class Site extends BaseModel
 {
@@ -26,7 +27,28 @@ class Site extends BaseModel
 
     protected $primaryKey = 'site_id';
 
-    protected $fillable = ['name', 'description', 'address'];
+    protected function casts(): array
+    {
+        return [
+            'auto_created' => 'bool',
+        ];
+    }
+
+    /**
+     * Is this a real place or a placeholder?
+     *
+     * A placeholder is what LocationResolver makes for a sysLocation nobody has
+     * filed yet: a site named after its own single room, so an address always
+     * had somewhere to land. It is not a destination anybody chose, and things
+     * an operator states about real places — a subnet that reaches this site —
+     * are not offered one.
+     */
+    public function isDefined(): bool
+    {
+        return ! $this->auto_created;
+    }
+
+    protected $fillable = ['name', 'description', 'address', 'auto_created'];
 
     /**
      * The sysLocation strings that roll up into this site.

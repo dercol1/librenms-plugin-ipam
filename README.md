@@ -6,15 +6,21 @@ all'interno della stessa VLAN e dello stesso sito.
 
 Non modifica LibreNMS. Un aggiornamento del core non lo rompe.
 
+**English**: [README.en.md](README.en.md) · Development manual:
+[docs/development.md](docs/development.md)
+
 - [A cosa serve](#a-cosa-serve)
 - [Siti e sedi](#siti-e-sedi)
 - [Uso](#uso)
+- [Domini trasversali](#domini-trasversali)
 - [Installazione](#installazione)
 - [Disinstallazione](#disinstallazione)
 - [Aggiornamenti di LibreNMS](#aggiornamenti-di-librenms)
 - [Comandi](#comandi)
+- [Permessi](#permessi)
 - [Avvertenza sulla pagina Validate](#avvertenza-sulla-pagina-validate)
 - [Sviluppo](#sviluppo)
+- [Struttura](#struttura)
 
 ## A cosa serve
 
@@ -31,9 +37,10 @@ access point è così che è saltato fuori), e due volte nella stessa VLAN senza
 sito noto anche. Non collocabile è solo chi non ha né l'una né l'altro, e finisce
 nella coda dei non classificati.
 
-In un'installazione tipica **141 dei 220 VLAN id compaiono in più di un sito**,
-quindi il VLAN id da solo non è un'identità. VLAN 100 a sede centrale e VLAN 100
-in un branch sono due domini di broadcast diversi.
+In questa installazione **196 dei 224 id VLAN compaiono in più di un sito**, e
+servono 621 record per tenerli tutti: quindi il VLAN id da solo non è
+un'identità. VLAN 100 a sede centrale e VLAN 100 in un branch sono due domini di
+broadcast diversi.
 
 Il plugin aggiunge il contesto che a un indirizzo da solo manca: la rete di
 appartenenza, il proprietario, la funzione, e la coppia VLAN/sito.
@@ -42,9 +49,9 @@ appartenenza, il proprietario, la funzione, e la coppia VLAN/sito.
 
 Un sito **non** è quello che gli apparati riportano. Gli apparati riportano una
 `sysLocation`, che è una stanza con scritta male: lo stesso edificio arriva con
-una stringa diversa da ogni switch che ci sta dentro. In questa installazione
-**38 stringhe descrivono circa 5 posti** — «Galazzano», «Galazzano Sala B»,
-«Galazzano, (Sala server A)» e «SSIS Galazzano (Sala server A)» sono lo stesso
+una stringa diversa da ogni switch che ci sta dentro. Su questa installazione le
+**41 stringhe descrivevano 41 siti** — «Galazzano», «Galazzano Sala B»,
+«Galazzano, (Sala server A)» e «AZIENDA0 Galazzano (Sala server A)» sono lo stesso
 sito.
 
 Preso alla lettera, ognuno di quei nomi diventa un sito a sé, e la stessa VLAN
@@ -64,7 +71,16 @@ niente va perso e ogni indirizzo resta classificabile. Sistemarla sotto il sito
 vero è un'azione, e siccome il sito è l'ambito in cui si giudica una collisione,
 farlo è ciò che riconcilia due stanze dello stesso edificio.
 
-La pagina **Siti e sedi** propone i raggruppamenti: stringhe che condividono una
+Il sito così creato è un **segnaposto** (`auto_created`): è una stringa con un
+nome sopra, non un posto che qualcuno ha scelto. La pagina **Sites and
+locations** lo distingue da un sito definito, e i due posti hanno un peso diverso ovunque: un
+segnaposto conta come ambito per le collisioni — è un indirizzo in quel
+perimetro, e basta — ma **non viene offerto** dove un operatore deve scegliere un
+posto vero, per esempio gli endpoint di una rete trasversale. Un segnaposto
+diventa sito definito nel momento in cui l'operatore lo rinomina, gli dà
+un'indirizzo, o accetta una proposta di raggruppamento.
+
+La pagina **Sites and locations** propone i raggruppamenti: stringhe che condividono una
 parola che sembra un toponimo, chiuse transitivamente («se A condivide una parola
 con B e B con C, tutti e tre insieme»). La proposta nomina anche i siti che
 scomparirebbero. Accettarla fonde i siti, sposta le sedi, e **collassa le VLAN
@@ -72,8 +88,11 @@ che erano lo stesso dominio di broadcast contato due volte**: le righe che
 puntavano al record «perdente» seguono il superstite, così nessun dato resta con
 un piede in due siti.
 
-In questa installazione, fondere le dieci sedi di Galazzano porta le VLAN del
-sito da 601 righe sparse a **130 righe, una per VLAN id**.
+Su questa installazione le proposte accettate hanno portato da 41 siti a **21**:
+**3 siti veri** con le loro sedi (Galazzano 23, AZIENDA1-Sede 6, AZIENDA0-Borgo Maggiore
+2), **10 segnaposto** ancora da sistemare e **8 residui** vuoti, rimasti da un
+merge che ha portato via l'ultima stanza. Le VLAN del sito sono passate da 601
+righe sparse a **130 righe, una per VLAN id**.
 
 ## Uso
 
@@ -87,7 +106,8 @@ creati anche il `10.14.0.0/16` e il `10.0.0.0/8` che lo contengono: sito,
 proprietario e funzione si impostano una volta sola sul `/8` e tutto sotto
 eredita. È questo che rende descrivibile un segmento ampio. Un blocco descritto a
 mano resta tale: l'import non lo tocca. La colonna del sito mostra anche quante
-sedi vi sono state raggruppate.
+sedi vi sono state raggruppate. Una rete portata a layer 2 tra più sedi si
+dichiara dal blocco stesso, vedi [Domini trasversali](#domini-trasversali).
 
 **VLAN.** Una riga per VLAN per sito, ciascuna con proprietario, sito e
 descrizione propria, e le **sedi del sito in cui è stata vista**: una VLAN che
@@ -96,7 +116,9 @@ finiscono in `ipam_vlan_locations` invece di moltiplicare la VLAN. Il nome che
 LibreNMS legge dagli apparati arriva troncato a 32 caratteri, quindi fa solo da
 seme: il testo vero sta in una colonna che nulla tronca. Ogni nome che ogni
 apparato ha riportato viene conservato, ed è così che diventa visibile che due
-switch chiamano in modo diverso la stessa VLAN.
+switch chiamano in modo diverso la stessa VLAN. Una VLAN portata a layer 2 tra
+più sedi si dichiara dalla pagina stessa: vedi
+[Domini trasversali](#domini-trasversali).
 
 **Indirizzi.** Ogni indirizzo con il blocco, la VLAN, il sito — sede compresa —
 e il proprietario a cui è stato assegnato. Nel campo di ricerca si può mettere
@@ -110,7 +132,7 @@ lo stesso sito, con porte e apparati dove sono stati visti, raggruppati per
 sito. Una collisione intenzionale, per esempio un indirizzo flottante, si marca
 come prevista con una motivazione e smette di comparire.
 
-**Siti e sedi.** L'elenco dei siti con le sedi raggruppate, i conteggi che dicono
+**Sites and locations** (Siti e sedi). L'elenco dei siti con le sedi raggruppate, i conteggi che dicono
 quanto ciascuno pesa, le proposte di fusione, e le sedi non ancora sistemate.
 
 **Proprietari e funzioni.** I tre elenchi da cui le altre pagine attingono:
@@ -136,20 +158,58 @@ pagine mostrano finalmente i **messaggi**: il flash di successo e di errore
 validazione, così un form rifiutato non è più indistinguibile da uno che ha
 funzionato.
 
-**VLAN trasversali ai siti.** Una VLAN trasportata a layer 2 — fibra, E-Line,
-o QinQ dentro una S-VID 802.1ad — è **un solo dominio di broadcast che arriva
-uguale a più sedi**, mentre il plugin ne legge una per sito: è quello che gli
-apparati riportano, ed è la lettura giusta per gli id che sono solo lo stesso
-numero riusato in locale. Sulla pagina VLAN ogni record offre **«Stretched
-across sites»**: si spuntano i record fratelli (stesso id e dominio, altra
-sede) e si scrive come viaggia — la nota vive sul dominio e ogni membro la
-mostra. Da lì la regola delle collisioni cambia: **dentro un dominio la VLAN è
-da sola l'ambito**, la sede smette di separare, e lo stesso indirizzo alle due
-estremità diventa un conflitto, perché a layer 2 nessuno può possederlo due
-volte. Il verdetto «previsto» si dà una volta sul dominio e vale per tutte le
-sedi. Il collegamento è una **decisione dell'operatore** che l'import non tocca
-mai: due gruppi che si incontrano si fondono, un membro tolto lascia il resto
-intatto, l'ultimo che resta riporta la VLAN locale e il gruppo se ne va.
+**Ciclo di vita: nascondere o cancellare.** La regola è una frase sola e tutto il
+resto ne segue. Ciò che **LibreNMS riporta è dell'import**, e le sue righe si
+possono **solo nascondere**: il prossimo poll le riporta indietro, quindi
+cancellarle sarebbe un modo più lento di nasconderle. Ciò che **un operatore ha
+scritto** — o che l'import gli ha **affidato** quando LibreNMS ha smesso di
+riportarlo — è suo, e si cancella.
+
+Ed è proprio l'import a decidere quando affida. A un `lnms ipam:import` gli
+oggetti che **non ci sono più** in LibreNMS si dividono in due, e il criterio è
+la gerarchia:
+
+- **senza gerarchia** erano impalcatura: un `/24` esisteva perché dentro c'era
+  un indirizzo, e quell'indirizzo non c'è più. La riga va via.
+- **con gerarchia** sono una descrizione di dati vivi: dentro la rete ci sono
+  ancora indirizzi, o sotto ci sono altre reti. Cancellarla porterebbe via la
+  mappa, quindi l'import **smette di chiamarla sua** (`auto_created` diventa
+  falso) e da lì in poi si comporta come una scritta a mano: nascondibile e
+  cancellabile, con un bottone che compare.
+
+Le **stanze** seguono la stessa regola: una `sysLocation` che LibreNMS non
+conosce più e non ha nulla addosso va via, e con lei il sito segnaposto che era
+nato solo per accoglierla. Una stanza che una VLAN dell'operatore nomina, o da
+cui arriva un indirizzo, resta.
+
+Due **rifiuti espliciti**, perché sono le due situazioni in cui una cancellazione
+farebbe danno: un blocco con indirizzi dentro non si cancella (li lascerebbe
+appesi al nulla, e spostarli è una decisione su dove stanno), e una VLAN con
+indirizzi classificati dentro neppure. E un import che **non ha letto nulla** non
+conclude niente: è anche quello che si vede con LibreNMS mai scoperto, e
+cancellare la mappa su quella prova sarebbe la cosa peggiore che il plugin
+potesse fare — quindi lo dice e non agisce.
+
+**Imputare a mano sito e sede.** VLAN, reti e indirizzio si possono sempre
+attribuire a mano, oltre che ai siti anche alle **sedi**: una rete o un indirizzo
+possono essere di un armadio e non solo dell'edificio, una VLAN può essere
+scritta per una stanza in cui non è stato ancora collegato niente. Sui
+indirizzi vale la stessa regola dei campi di ambito: senza il **pin** la
+correzione verrebbe disfatta dal poll successivo, con il pin resta.
+
+**Due record, una sola VLAN.** La chiave `(id, dominio, sito)` non è un vezzo:
+è l'ambito in cui si giudica una collisione, quindi due record della stessa VLAN
+nello stesso sito sarebbero due domini di broadcast dove ce n'è uno, e lo stesso
+indirizzo sui due lati non verrebbe mai segnalato come il conflitto che è. Ma
+quella coppia non è un errore da rifiutare, è l'operatore che dice «sono la stessa
+cosa»: può arrivare da un merge di due siti, o dal record di una VLAN trascinato
+a mano su un sito che quella VLAN la riporta già. In entrambi i casi **i due
+record diventano uno**, e li segue tutto quello che puntava al perdente: gli
+indirizzi classificati dentro, le stanze in cui è stata vista, il nome che ogni
+switch le dava, il dominio stirato di cui faceva parte, i verdetti sulle sue
+collisioni. Non si perde nulla di quello che l'operatore aveva scritto sul record
+che sparisce. È l'unico caso in cui un'operazione del plugin **cambia il numero
+di righe** di una tabella, e lo dice.
 
 I **nomi sono unici**, e per un po' l'unica cosa che lo faceva rispettare era
 il vincolo del database: rinominare un sito (o una voce degli elenchi) su un
@@ -197,8 +257,11 @@ quello che LibreNMS already sa: un firewall non ancora acceso, una riserva in
 consegna, il gateway di un segmento che non è ancora andato in servizio.
 Un indirizzo aggiunto a mano nasce **pinned**, così l'import non lo cancella per
 il solo fatto di non vederlo in LibreNMS; una VLAN aggiunta a mano nasce
-descritta, così l'import non la rinomina. I valori lasciati su «inherit» vengono
-dal blocco che contiene l'indirizzo, come all'import.
+descritta, così l'import non la rinomina; una rete aggiunta a mano non è
+dell'import, quindi non la tocca. I valori lasciati su «inherit» vengono dal
+blocco che contiene l'indirizzo, come all'import. Ogni cosa aggiunta a mano si
+può **cancellare**, oltre che nascondere: vedi
+[Ciclo di vita](#uso).
 
 **Indirizzi liberi.** Il pannello sulla pagina Indirizzi — o `lnms ipam:free
 10.14.146.0/24` — risponde alla domanda che la ricerca non può fare: cosa posso
@@ -212,14 +275,118 @@ effettivamente pollando, con la stessa identità e gli stessi filtri dell'import
 quanto non è ancora stato importato, quanto non è più riportato e verrà rimosso
 al prossimo import. Le righe aggiunte a mano non sono attese in LibreNMS, quindi
 non contano come deriva. Il pannello **LibreNMS and the ipam** sul pulsante Page
-mostra gli stessi numeri; in questa installazione, dopo la pulizia delle VLAN
-residue dei vecchi siti, dice `in sync` su 556/556 indirizzi e 752/752 coppie
-VLAN/sito.
+mostra gli stessi numeri; su questa installazione dice `in sync` su **547/547
+indirizzi** e **621/621 coppie VLAN/sito**.
 
-Da rivedere: dopo l'import iniziale, **68 indirizzi su 556 restano non
+Da rivedere: dopo l'import iniziale, **66 indirizzi sui 425 visibili restano non
 classificati**, perché stanno su host e firewall e non su porte di switch. Non
 hanno né VLAN né sito, quindi non partecipano al rilevamento delle collisioni.
 Basta descrivere un blocco per classificarli tutti insieme.
+
+## Domini trasversali
+
+Alcune VLAN e alcune reti **non si fermano a un sito**: sono trasportate a layer 2
+su fibra, su una E-Line, o dentro una S-VID 802.1ad con QinQ, e arrivano all'altra
+sede **uguali**. Sono due cose diverse da dichiarare, perché sono due livelli:
+
+| | che cosa è | dove si dichiara | tabella |
+|---|---|---|---|
+| **dominio di broadcast** | la VLAN: quale zona L2 è un'unica zona | pagina **VLAN**, riga della VLAN | `ipam_vlan_groups` |
+| **subnet** | la rete: quale piano di indirizzamento esiste invariato | pagina **Mappa reti**, riga del blocco | `ipam_network_stretches` |
+
+Perché serve una dichiarazione e non basta l'import: **nessun apparato riporta la
+propria topologia di layer 2**. Un device sa dire «sono nella VLAN 999», non
+«questa VLAN arriva qui dalla sede di Galazzano su una fibra». L'unica fonte è
+l'operatore, quindi è una decisione: si prende una volta, e da lì in poi la
+riconosce il plugin. **L'import non la tocca mai**, in nessuna direzione.
+
+Quello che il plugin legge da solo resta giusto: **una VLAN per sito** è ciò che
+gli apparati riportano, ed è la lettura corretta per i 196 id su 224 che sono solo
+lo stesso numero riusato in locale. La trasversalità è un'eccezione dichiarata,
+non il default.
+
+### Quando conviene dichiararla, e quando no
+
+Dichiara un dominio **quando lo stesso indirizzo alle due estremità sarebbe un
+conflitto vero**: è quello che succede a un gateway, a un indirizzo di gestione,
+a un servizio che esiste una volta sola per l'intero circuito.
+
+**Non** dichiararla per due siti che semplicemente riusano lo stesso numero di
+VLAN: sono due domini di broadcast distinti, il sito li tiene separati, e i due
+punti con lo stesso indirizzo sono due cose diverse. Dichiararli insieme
+produrrebbe un conflitto che non esiste.
+
+### VLAN: come si fa
+
+1. Apri **Plugins → IPAM → Vlans** e trova la riga della VLAN nel sito da cui
+   parte il trasporto.
+2. Clicca **Edit**. Nella sezione **Stretched across sites** spunta i record
+   fratelli — sono le righe con lo **stesso id e dominio in un altro sito**, che
+   sono esattamente le candidate che l'import ha creato per quello stesso numero.
+3. Scrivi **come viaggia** nel campo accanto: «QinQ dentro S-VID 400, fibra
+   Galazzano – AZIENDA1 Sede». Il testo vive sul dominio e ogni membro lo mostra,
+   perché è una cosa che nessuno riporta e che altrimenti finisce in un foglio
+   di calcolo.
+4. **Link as one domain**.
+
+Da quel momento, dentro il dominio, **la VLAN è da sola l'ambito**: la sede smette
+di separare e lo stesso indirizzo alle due estremità è **un conflitto**, perché a
+layer 2 nessuno può possederlo due volte. Il report lo etichetta
+`vlan 999 (Galazzano + AZIENDA1-Sede)`, e il verdetto «previsto» si dà **una volta
+sul dominio** e vale per tutte le sedi.
+
+Per tornare indietro: **Take out of the domain** su uno qualsiasi dei membri. Se
+ne resta uno solo, quello torna una VLAN locale e il gruppo se ne va da sé.
+
+### Reti: come si fa
+
+1. Apri **Plugins → IPAM → Network map** e trova il blocco (per esempio
+   `172.31.225.0/24`), clicca **Edit**.
+2. Nella sezione **Stretched across places** spunta i posti che la subnet
+   raggiunge e scrivi come viaggia.
+3. **Declare it stretched**.
+
+I posti offerti sono due soli, e la scelta è deliberata:
+
+- i **siti che un operatore ha definito e che hanno almeno una sede** — i posti
+  veri;
+- le **sede che LibreNMS dice avere la rete e che non appartengono a nessun
+  sito**, per il caso di un segmento che arriva in un solo armadio.
+
+Un **segnaposto non viene offerto**: è il posto di ripiego creato dal resolver
+per una `sysLocation` che nessuno ha ancora sistemato, non un luogo che qualcuno
+ha scelto. Se la tua rete arriva in un posto che è ancora un segnaposto, la strada
+è definire quel sito (o accettare la proposta di raggruppamento sulla pagina
+**Sites and locations**) e poi tornare qui.
+
+Da quel momento, dentro il dominio, **la sede smette di separare e l'ambito è la
+VLAN per numero**. La conseguenza pratica: lo stesso indirizzo alle due estremità
+della fibra è **un conflitto** anche se le due sedi hanno due record VLAN
+diversi — che è proprio il caso, perché quei due record sono lo stesso dominio di
+broadcast. Il report lo etichetta `172.31.225.0/24 (Galazzano + AZIENDA1-Sede)`.
+Il verdetto «previsto» si dà una volta sul dominio.
+
+Da notare che **due VLAN diverse dentro la stessa rete trasversale restano due
+domini**: sono due zone L2 che riusano lo stesso piano di indirizzamento, e
+nessuna delle due è in conflitto con l'altra.
+
+### Le regole che valgono per entrambi
+
+- **L'import non guarda e non tocca**. Nessun poll crea, sposta o cancella un
+  dominio: se lo facesse, un `ipam:import` a ogni ciclo di polling potrebbe
+  ribaltare una decisione presa al tavolo.
+- **Un blocco dentro un dominio lo eredita**, senza che nessuno lo dichiari: una
+  rete dentro un'altra è dentro quella, perché il dominio copre il blocco e tutto
+  ciò che sta sotto. Per questo le righe create dall'import sotto una rete
+  stirata nascono già nel dominio.
+- **Non si può stirare due volte**: dichiarare una rete che è già dentro un'altra
+  è **rifiutato**, con il messaggio che dice dentro quale. Altrimenti «dove
+  arriva?» avrebbe due risposte.
+- **Due domini che si incontrano si fondono**: se colleghi una VLAN che era già in
+  un dominio a un'altra che ne aveva uno suo, finisce in un dominio solo, e la nota
+  sul trasporto sopravvive.
+- **Un dominio non si cancella**: si toglie la dichiarazione. L'unica cosa che
+  sparisce con lui è il gruppo, quando non ha più membri.
 
 ## Installazione
 
@@ -278,7 +445,7 @@ Verifica:
 ```sh
 ./lnms route:clear
 php artisan ipam:check (./lnms ipam:check)
-php artisan route:list (./lnms route:list) | grep ipam      # 11 rotte 
+php artisan route:list (./lnms route:list) | grep -c ipam    # 33 rotte
 ```
 
 Con il symlink, `vendor/dercol1/librenms-plugin-ipam` punta alla directory di
@@ -291,7 +458,7 @@ Per un'installazione stabile, da un tag. Serve un repository git remoto con i
 tag, per esempio:
 
 ```sh
-git remote add origin git@github.com:<utente>/librenms-plugin-ipam.git
+git remote add origin git@github.com:dercol1/librenms-plugin-ipam.git
 git tag -a v1.0.0 -m "prima release"
 git push origin main --tags
 ```
@@ -300,7 +467,7 @@ Sul server si registra il repository come `vcs` e si richiede un tag preciso:
 
 ```sh
 cd /opt/librenms
-php composer.phar config repositories.ipam vcs git@github.com:<utente>/librenms-plugin-ipam.git
+php composer.phar config repositories.ipam vcs git@github.com:dercol1/librenms-plugin-ipam.git
 php composer.phar require dercol1/librenms-plugin-ipam:1.0.0
 php artisan ipam:install
 php artisan ipam:import
@@ -333,7 +500,7 @@ php artisan ipam:uninstall
 php composer.phar remove dercol1/librenms-plugin-ipam
 ```
 
-`ipam:uninstall` elimina le undici tabelle `ipam_*`, le due righe
+`ipam:uninstall` elimina le quattordici tabelle `ipam_*`, le due righe
 `ipam.view` e `ipam.manage` dalla tabella `permissions`, e disattiva il plugin.
 Chiede conferma e mostra il conteggio prima di cancellare:
 
@@ -400,7 +567,7 @@ Da verificare dopo un aggiornamento:
 ```sh
 php artisan ipam:check
 grep ipam composer.plugins.json
-php artisan route:list | grep -c ipam      # 27
+php artisan route:list | grep -c ipam      # 33
 ```
 
 ### Le tabelle del plugin e `lnms migrate`
@@ -458,11 +625,16 @@ php artisan ipam:free 10.14.146.0/24  # gli indirizzi liberi di un segmento
 php artisan ipam:free 10.14.146.0/24 --suggest=3   # solo i primi tre
 ```
 
-`ipam:import` si può rieseguire senza problemi. Aggiorna ciò che ha visto,
-conserva ciò che un operatore ha bloccato, e rimuove solo le occorrenze che
-LibreNMS ha smesso di segnalare. Le righe nelle range escluse vengono nascoste
-solo alla creazione: una riga riportata in luce a mano resta tale per ogni
-import successivo.
+`ipam:import` si può rieseguire senza problemi, ed è pensato per girare a ogni
+ciclo di polling. Aggiorna ciò che ha visto e conserva ciò che un operatore ha
+bloccato. Sul ciò che LibreNMS ha smesso di riportare decide in base alla
+gerarchia: **senza** nulla addosso la riga viene rimossa, **con** ancora dati
+sopra viene **affidata all'operatore** — smette di essere dell'import e diventa
+una riga che si può nascondere o cancellare come una scritta a mano. Il comando
+dice entrambe le cose, e non conclude niente se non ha letto nulla.
+
+Le righe nelle range escluse vengono nascoste solo alla creazione: una riga
+riportata in luce a mano resta tale per ogni import successivo.
 
 ## Permessi
 
@@ -494,37 +666,49 @@ aspetta, e quante righe contengono.
 ## Sviluppo
 
 ```sh
-vendor/bin/phpunit          # 199 test
-composer test:lint          # pint
-composer test:types         # phpstan, livello 6
+composer install                # una volta sola
+vendor/bin/phpunit              # 251 test
+composer test:lint              # pint
+composer test:types             # phpstan, livello 6
+composer test                   # i tre in fila
 ```
 
-phpstan gira con il binario e con larastan di LibreNMS, la coppia che LibreNMS
-rilascia e collauda insieme. Una seconda copia dentro il plugin produceva due
-definizioni di servizio incompatibili per la stessa estensione, e una terza
-combinazione faceva risolvere a larastan `view()` contro un'applicazione non
-avviata, così ogni `view()` del plugin sembrava un errore di battitura.
+I tre gate sono **bloccanti**: nessuna modifica al plugin si considera finita con
+i test verdi ma phpstan o pint che si lamentano.
+
+```sh
+cd /opt/librenms
+php artisan optimize:clear      # dopo aver cambiato una rotta
+php artisan ipam:install        # dopo aver cambiato lo schema
+php artisan ipam:import         # per vedere l'effetto sui dati veri
+```
 
 I test girano su sqlite con le tabelle di LibreNMS che il plugin legge ricreate a
-mano, quindi non servono né database né rete.
-
-Impostare `LIBRENMS_PATH` se LibreNMS non è in `/opt/librenms`.
+mano, quindi non servono né database né rete. Il **manuale di sviluppo** — architettura,
+come si aggiunge una funzione, le convenzioni e i trabocchetti già incontrati — è
+in [docs/development.md](docs/development.md).
 
 ## Struttura
 
 ```
+README.md / README.en.md     il documento, in italiano e in inglese
+docs/development.md          il manuale di sviluppo, in inglese
 config/ipam.php              valori di default, tutti sovrascrivibili dalla pagina
 resources/lang/en/ipam.php   ogni stringa mostrata dal plugin
 resources/views/             le sei pagine e i frammenti condivisi (nav, statistiche,
                              cella del sito, liste di opzioni condivise, riempimento,
                              pannello indirizzi liberi)
 src/Collision/               la regola delle collisioni
-src/Import/                  vlan e indirizzi, la risoluzione sysLocation → sede → sito
+src/Import/                  vlan e indirizzi, la risoluzione sysLocation → sede → sito,
+                             e la riconciliazione di ciò che LibreNMS ha smesso di riportare
 src/Sites/                   proposte di raggruppamento e fusione dei siti
+src/Networks/                le reti stirate: i posti che raggiungono e cosa ne segue
+src/Vlans/                   i domini di broadcast che attraversano i siti, e il
+                             collasso di due record della stessa vlan in uno
 src/Sync/                    il confronto tra l'ipam e ciò che LibreNMS polla
 src/Models/                  le tabelle del plugin
 src/Support/                 aritmetica degli indirizzi, schema
 src/Web/                     controller, directory dei siti, ricerca di indirizzi liberi
 src/Console/                 i sette comandi
-tests/                       199 test
+tests/                       251 test
 ```

@@ -120,6 +120,14 @@
                                             <i class="fa fa-arrows-left-right-to-line" aria-hidden="true"></i>
                                             {{ $domainLabels[$group->vlanGroupId] ?? '' }}
                                         </span>
+                                    @elseif ($group->stretchId > 0)
+                                        <span class="label label-info" title="{{ __('ipam::ipam.networks.stretch_intro') }}">
+                                            <i class="fa fa-arrows-left-right-to-line" aria-hidden="true"></i>
+                                            {{ $subnetLabels[$group->stretchId] ?? '' }}
+                                            @if ($group->vlanNumber > 0)
+                                                <span class="tw:font-mono">{{ $group->vlanNumber }}</span>
+                                            @endif
+                                        </span>
                                     @elseif ($group->vlanRecordId !== null)
                                         <span class="tw:font-mono">{{ $vlanLabels[$group->vlanRecordId] ?? '' }}</span>
                                     @else
@@ -158,6 +166,7 @@
                                             <input type="hidden" name="site_id" value="{{ $group->siteId }}">
                                             <input type="hidden" name="vlan_record_id" value="{{ $group->vlanRecordId ?? 0 }}">
                                             <input type="hidden" name="vlan_group_id" value="{{ $group->vlanGroupId }}">
+                                            <input type="hidden" name="stretch_id" value="{{ $group->stretchId }}">
 
                                             <div class="row">
                                                 <div class="form-group col-md-3">

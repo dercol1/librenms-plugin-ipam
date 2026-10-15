@@ -133,15 +133,20 @@ class IpamPluginProvider extends ServiceProvider
                     Route::post('networks', [NetworksController::class, 'save'])->name('networks.save');
                     Route::post('networks/ladder', [NetworksController::class, 'createWithParents'])->name('networks.ladder');
                     Route::delete('networks/{networkId}', [NetworksController::class, 'destroy'])->name('networks.destroy');
+                    Route::post('networks/{networkId}/stretch', [NetworksController::class, 'stretch'])->name('networks.stretch');
+                    Route::post('networks/{networkId}/unstretch', [NetworksController::class, 'unstretch'])->name('networks.unstretch');
+                    Route::post('networks/{networkId}/stretch/describe', [NetworksController::class, 'describeStretch'])->name('networks.stretch.describe');
 
                     Route::post('vlans/{vlanRecordId}', [VlansController::class, 'update'])->name('vlans.update');
+                    Route::delete('vlans/{vlanRecordId}', [VlansController::class, 'destroy'])->name('vlans.destroy');
+                    Route::post('vlans/{vlanRecordId}/room', [VlansController::class, 'room'])->name('vlans.room');
 
                     Route::put('addresses/{addressId}', [AddressesController::class, 'update'])->name('addresses.update');
+                    Route::delete('addresses/{addressId}', [AddressesController::class, 'destroy'])->name('addresses.destroy');
                     Route::post('addresses', [AddressesController::class, 'store'])->name('addresses.store');
                     Route::post('addresses/block', [AddressesController::class, 'applyToBlock'])->name('addresses.block');
                     Route::post('addresses/bulk', [AddressesController::class, 'bulk'])->name('addresses.bulk');
 
-                    Route::post('vlans/{vlanRecordId}', [VlansController::class, 'update'])->name('vlans.update');
                     Route::post('vlans', [VlansController::class, 'store'])->name('vlans.store');
                     Route::post('vlans/{vlanRecordId}/link', [VlansController::class, 'link'])->name('vlans.link');
                     Route::post('vlans/{vlanRecordId}/unlink', [VlansController::class, 'unlink'])->name('vlans.unlink');

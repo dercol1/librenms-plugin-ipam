@@ -7,6 +7,8 @@ use App\Models\Device;
 use Dercol1\LibrenmsIpam\Collision\DuplicateGroup;
 use Dercol1\LibrenmsIpam\Models\Address;
 use Dercol1\LibrenmsIpam\Models\Duplicate;
+use Dercol1\LibrenmsIpam\Models\Network;
+use Dercol1\LibrenmsIpam\Models\NetworkStretch;
 use Dercol1\LibrenmsIpam\Models\Site;
 use Dercol1\LibrenmsIpam\Models\Vlan;
 use Dercol1\LibrenmsIpam\Models\VlanGroup;
@@ -60,7 +62,7 @@ class DuplicatesController extends Controller
         }
 
         // one query each rather than one per group inside the view
-        [$vlanLabels, $siteLabels, $domainLabels] = $this->labels($groups);
+        [$vlanLabels, $siteLabels, $domainLabels, $subnetLabels] = $this->labels($groups);
         $directory = SiteDirectory::load();
 
         return view('ipam::duplicates', [
@@ -72,6 +74,7 @@ class DuplicatesController extends Controller
             'vlanLabels' => $vlanLabels,
             'siteLabels' => $siteLabels,
             'domainLabels' => $domainLabels,
+            'subnetLabels' => $subnetLabels,
             'directory' => $directory,
             'useVlanScope' => $settings->useVlanScope(),
             'counts' => [
@@ -119,6 +122,8 @@ class DuplicatesController extends Controller
                 siteId: $group->siteId,
                 vlanRecordId: $group->vlanRecordId,
                 vlanGroupId: $group->vlanGroupId,
+                stretchId: $group->stretchId,
+                vlanNumber: $group->vlanNumber,
                 occurrences: $visible,
                 note: $group->note,
                 ignored: $group->ignored,
@@ -132,7 +137,7 @@ class DuplicatesController extends Controller
      * Vlan and site names for the groups on screen, in two queries.
      *
      * @param  list<DuplicateGroup>  $groups
-     * @return array{0: array<int, string>, 1: array<int, string>, 2: array<int, string>}
+     * @return array{0: array<int, string>, 1: array<int, string>, 2: array<int, string>, 3: array<int, string>}
      */
     private function labels(array $groups): array
     {
@@ -143,6 +148,11 @@ class DuplicatesController extends Controller
 
         $groupIds = array_values(array_filter(array_unique(array_map(
             fn (DuplicateGroup $g): int => $g->vlanGroupId,
+            $groups
+        ))));
+
+        $stretchIds = array_values(array_filter(array_unique(array_map(
+            fn (DuplicateGroup $g): int => $g->stretchId,
             $groups
         ))));
 
@@ -175,11 +185,30 @@ class DuplicatesController extends Controller
             }
         }
 
+        // a stretched subnet is labelled with the range and where it reaches,
+        // which is what answers "what is this in" for a finding whose vlan is
+        // only a number
+        $subnetLabels = [];
+
+        foreach ($stretchIds as $stretchId) {
+            $domain = NetworkStretch::query()->with('places')->find($stretchId);
+
+            if ($domain !== null) {
+                $network = Network::query()->find((int) $domain->network_id);
+
+                $subnetLabels[$stretchId] = sprintf(
+                    '%s (%s)',
+                    (string) ($network->cidr ?? $domain->name ?? '?'),
+                    implode(' + ', $domain->placeNames()),
+                );
+            }
+        }
+
         $sites = $siteIds === []
             ? []
             : Site::query()->whereIn('site_id', $siteIds)->pluck('name', 'site_id')->all();
 
-        return [$vlans, $sites, $domainLabels];
+        return [$vlans, $sites, $domainLabels, $subnetLabels];
     }
 
     /**
@@ -199,6 +228,7 @@ class DuplicatesController extends Controller
             'site_id' => ['nullable', 'integer'],
             'vlan_record_id' => ['nullable', 'integer'],
             'vlan_group_id' => ['nullable', 'integer'],
+            'stretch_id' => ['nullable', 'integer'],
             'ignored' => ['nullable', 'boolean'],
             'note' => ['nullable', 'string', 'max:255'],
         ]);
@@ -209,9 +239,11 @@ class DuplicatesController extends Controller
                 'address' => $data['address'],
                 'site_id' => (int) ($data['site_id'] ?? 0),
                 'vlan_record_id' => (int) ($data['vlan_record_id'] ?? 0),
-                // the identity of a stretched vlan's verdict is the domain, so
-                // the annotation stores the group and the report reads it back
+                // the identity of a verdict on a stretched scope is the domain,
+                // so the annotation stores it and the report reads it back. One
+                // of the two is ever set: a vlan group or a stretched subnet.
                 'vlan_group_id' => (int) ($data['vlan_group_id'] ?? 0),
+                'stretch_id' => (int) ($data['stretch_id'] ?? 0),
             ],
             [
                 'ignored' => $request->boolean('ignored'),

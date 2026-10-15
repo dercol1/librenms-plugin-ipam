@@ -48,6 +48,11 @@ class VlanImporter
 
     public function import(ImportResult $result): void
     {
+        // the reconciler only touches vlans when this half of the import ran:
+        // reconciling against a run that never looked at the vlan table would be
+        // deciding on evidence nobody gathered
+        $result->vlanImportRan = true;
+
         $vlans = DB::table('vlans as v')
             ->join('devices as d', 'd.device_id', '=', 'v.device_id')
             ->leftJoin('locations as l', 'l.id', '=', 'd.location_id')
@@ -71,7 +76,7 @@ class VlanImporter
             ->orderBy('v.device_id')
             ->get();
 
-        $this->resolver->syncAll();
+        $this->resolver->syncAll($result);
 
         $seen = [];
         $namesByVlan = [];
@@ -93,9 +98,12 @@ class VlanImporter
             $now = now();
 
             if (! isset($seen[$key])) {
-                $this->upsertVlan((int) $row->vlan_number, (int) ($row->vlan_domain ?: 1), $siteId, $row->vlan_name, $now);
+                $record = $this->upsertVlan((int) $row->vlan_number, (int) ($row->vlan_domain ?: 1), $siteId, $row->vlan_name, $now);
                 $seen[$key] = true;
                 $result->vlansCreated[(int) $row->vlan_number] = ($result->vlansCreated[(int) $row->vlan_number] ?? 0) + 1;
+
+                // the estate still has this one, whichever way it already existed
+                $result->seenVlanRecords[(int) $record->vlan_record_id] = true;
             }
 
             // A vlan spans a site, so the same one is seen in several rooms and
@@ -157,8 +165,12 @@ class VlanImporter
      * Only auto_created records are touched. Once an operator has filled in a
      * description or an owner, the import must not walk over it, and that is
      * exactly the case auto_created exists for.
+     *
+     * Returns the record either way: the caller has to say it saw it, and that
+     * is what keeps the reconciler from treating a vlan a device still reports
+     * as one the estate has lost.
      */
-    private function upsertVlan(int $vlanId, int $domain, int $siteId, ?string $name, mixed $now): void
+    private function upsertVlan(int $vlanId, int $domain, int $siteId, ?string $name, mixed $now): Vlan
     {
         $existing = Vlan::query()
             ->where('vlan_id', $vlanId)
@@ -173,10 +185,10 @@ class VlanImporter
                 $existing->save();
             }
 
-            return;
+            return $existing;
         }
 
-        Vlan::query()->create([
+        return Vlan::query()->create([
             'vlan_id' => $vlanId,
             'vlan_domain' => $domain,
             'site_id' => $siteId,

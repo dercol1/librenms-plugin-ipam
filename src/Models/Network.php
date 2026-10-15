@@ -28,11 +28,13 @@ use InvalidArgumentException;
  * @property string $packed_end
  * @property string|null $description
  * @property int $site_id
+ * @property int $location_id
  * @property int $vlan_id
  * @property int $net_owner_id
  * @property int $net_function_id
  * @property bool $auto_created
  * @property bool $ignored
+ * @property int $stretch_id
  */
 class Network extends BaseModel
 {
@@ -48,11 +50,13 @@ class Network extends BaseModel
         'prefixlen',
         'description',
         'site_id',
+        'location_id',
         'vlan_id',
         'net_owner_id',
         'net_function_id',
         'auto_created',
         'ignored',
+        'stretch_id',
     ];
 
     protected function casts(): array
@@ -61,11 +65,13 @@ class Network extends BaseModel
             'family' => 'int',
             'prefixlen' => 'int',
             'site_id' => 'int',
+            'location_id' => 'int',
             'vlan_id' => 'int',
             'net_owner_id' => 'int',
             'net_function_id' => 'int',
             'auto_created' => 'bool',
             'ignored' => 'bool',
+            'stretch_id' => 'int',
         ];
     }
 
@@ -123,6 +129,39 @@ class Network extends BaseModel
     public function site(): BelongsTo
     {
         return $this->belongsTo(Site::class, 'site_id', 'site_id');
+    }
+
+    /**
+     * The room this segment is homed in, when that is finer than the site.
+     *
+     * @return BelongsTo<Location, $this>
+     */
+    public function location(): BelongsTo
+    {
+        return $this->belongsTo(Location::class, 'location_id', 'location_id');
+    }
+
+    /**
+     * The domain this range is carried across, when it is.
+     *
+     * @return BelongsTo<NetworkStretch, $this>
+     */
+    public function stretch(): BelongsTo
+    {
+        return $this->belongsTo(NetworkStretch::class, 'stretch_id', 'stretch_id');
+    }
+
+    /**
+     * Is this block the operator's rather than the import's?
+     *
+     * The distinction decides what may be done to it: anything the import owns
+     * is only hideable, because the next poll would bring it back and deleting
+     * it would just be a slower way of hiding it. A block someone wrote down —
+     * typed in, or handed over after its addresses vanished — can go for good.
+     */
+    public function isManual(): bool
+    {
+        return ! $this->auto_created;
     }
 
     /**

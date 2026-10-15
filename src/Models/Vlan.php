@@ -75,6 +75,18 @@ class Vlan extends BaseModel
      * The label to show: the operator's description wins, then the name we
      * seeded from the device, then something unmistakable.
      */
+    /**
+     * Is this record the operator's rather than the import's?
+     *
+     * Same rule as a block: the import owns what it created, so those are only
+     * hideable — the next poll recreates them. A vlan someone typed in, or one
+     * the import handed over after it stopped being reported, can be deleted.
+     */
+    public function isManual(): bool
+    {
+        return ! $this->auto_created;
+    }
+
     public function label(): string
     {
         if (! empty($this->description)) {

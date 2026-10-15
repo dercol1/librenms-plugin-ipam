@@ -5,6 +5,7 @@ namespace Dercol1\LibrenmsIpam\Web;
 use App\Facades\Permissions;
 use App\Models\Device;
 use Dercol1\LibrenmsIpam\Models\Address;
+use Dercol1\LibrenmsIpam\Models\Location;
 use Dercol1\LibrenmsIpam\Models\Network;
 use Dercol1\LibrenmsIpam\Models\NetworkFunction;
 use Dercol1\LibrenmsIpam\Models\NetworkOwner;
@@ -243,7 +244,7 @@ class AddressesController extends Controller
 
         $attributes = [];
 
-        foreach (['site_id', 'vlan_record_id', 'net_owner_id', 'net_function_id'] as $field) {
+        foreach (['site_id', 'location_id', 'vlan_record_id', 'net_owner_id', 'net_function_id'] as $field) {
             $value = $request->input($field);
 
             // absent or '' means "leave alone"; 0 means "inherit"
@@ -300,6 +301,7 @@ class AddressesController extends Controller
     {
         return ScopeRules::make([
             'site_id' => ['ipam_sites', 'site_id'],
+            'location_id' => ['ipam_locations', 'location_id'],
             'vlan_record_id' => ['ipam_vlans', 'vlan_record_id'],
             'net_owner_id' => ['ipam_net_owners', 'net_owner_id'],
             'net_function_id' => ['ipam_net_functions', 'net_function_id'],
@@ -326,6 +328,14 @@ class AddressesController extends Controller
 
         // 0 = inherit, which is the reason the columns are 0 and not null
         $address->site_id = (int) ($data['site_id'] ?? 0);
+        // The room is only written when the form sent the field: it is the one
+        // attribution the import re-derives from the device on every refresh, and
+        // a caller that never mentioned it should not clear a room by accident.
+        // The lock below is what makes a chosen room stick.
+        if (array_key_exists('location_id', $data)) {
+            $address->location_id = (int) $data['location_id'];
+        }
+
         $address->vlan_record_id = (int) ($data['vlan_record_id'] ?? 0);
         $address->net_owner_id = (int) ($data['net_owner_id'] ?? 0);
         $address->net_function_id = (int) ($data['net_function_id'] ?? 0);
@@ -367,6 +377,7 @@ class AddressesController extends Controller
         // here too: those values come from the block below, once the row exists
         $data = $request->validate(ScopeRules::make([
             'site_id' => ['ipam_sites', 'site_id'],
+            'location_id' => ['ipam_locations', 'location_id'],
             'vlan_record_id' => ['ipam_vlans', 'vlan_record_id'],
             'net_owner_id' => ['ipam_net_owners', 'net_owner_id'],
             'net_function_id' => ['ipam_net_functions', 'net_function_id'],
@@ -410,6 +421,7 @@ class AddressesController extends Controller
             'context_name' => '',
             'network_id' => $block === null ? 0 : (int) $block->network_id,
             'site_id' => (int) ($data['site_id'] ?? ($block?->inherit('site_id') ?? 0)),
+            'location_id' => (int) ($data['location_id'] ?? ($block?->inherit('location_id') ?? 0)),
             'vlan_record_id' => (int) ($data['vlan_record_id'] ?? 0),
             'net_owner_id' => (int) ($data['net_owner_id'] ?? ($block?->inherit('net_owner_id') ?? 0)),
             'net_function_id' => (int) ($data['net_function_id'] ?? ($block?->inherit('net_function_id') ?? 0)),
@@ -423,6 +435,31 @@ class AddressesController extends Controller
         $address->save();
 
         return back()->with('success', __('ipam::ipam.created', ['what' => $cidr->compressed()]));
+    }
+
+    /**
+     * Delete an address the operator owns.
+     *
+     * Only a row with no port behind it: an occurrence on a real port is
+     * LibreNMS's, the next poll recreates it, and deleting it would be a slower
+     * way of hiding it. What is left to delete is a plan — the address of
+     * something not plugged in yet — and a plan is only removed by the person
+     * who wrote it.
+     */
+    public function destroy(Request $request, int $addressId): RedirectResponse
+    {
+        $this->authorizeManage();
+
+        $address = Address::findOrFail($addressId);
+
+        if (! $address->isManual()) {
+            return back()->with('error', __('ipam::ipam.addresses.delete_imported'));
+        }
+
+        $label = $address->label();
+        $address->delete();
+
+        return back()->with('success', __('ipam::ipam.deleted', ['what' => $label]));
     }
 
     /**
@@ -504,6 +541,8 @@ class AddressesController extends Controller
     {
         return [
             'sites' => SiteDirectory::load()->options(),
+            'rooms' => Location::query()->orderBy('name')->pluck('name', 'location_id')
+                ->map(fn ($name): string => (string) $name)->all(),
             'vlans' => Vlan::query()->orderBy('vlan_id')->get(['vlan_record_id', 'vlan_id', 'site_id', 'name', 'description'])
                 ->mapWithKeys(fn (Vlan $v): array => [$v->vlan_record_id => $v->label() . ($v->site_id ? '' : ' (no site)')]),
             'owners' => NetworkOwner::query()->orderBy('name')->pluck('name', 'net_owner_id'),

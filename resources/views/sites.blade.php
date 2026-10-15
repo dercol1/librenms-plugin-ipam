@@ -129,6 +129,25 @@
                         <tr>
                             <td>
                                 <strong>{{ $site->name }}</strong>
+                                {{-- a placeholder is a sysLocation with a name on it: somewhere for
+                                     its addresses to land until somebody files it. Only a defined
+                                     site is offered where an operator has to pick a real place,
+                                     so the two have to be tellable apart at a glance --}}
+                                @if ($site->auto_created)
+                                    <span class="label label-warning tw:ml-1" title="{{ __('ipam::ipam.sites.placeholder_hint') }}">
+                                        {{ __('ipam::ipam.sites.placeholder') }}
+                                    </span>
+                                @elseif ($row['locations']->isEmpty()
+                                    && $row['vlans'] === 0 && $row['addresses'] === 0 && $row['networks'] === 0)
+                                    {{-- residue: a merge moved its last room away and left the name.
+                                         Not a place anybody chose, and not a place a segment
+                                         reaches: the empty sites panel offers it for removal --}}
+                                    <span class="label label-default tw:ml-1" title="{{ __('ipam::ipam.sites.empty_hint') }}">
+                                        {{ __('ipam::ipam.sites.empty') }}
+                                    </span>
+                                @else
+                                    <span class="label label-success tw:ml-1">{{ __('ipam::ipam.sites.defined') }}</span>
+                                @endif
                                 @if ($site->description)
                                     <div class="text-muted small">{{ $site->description }}</div>
                                 @endif

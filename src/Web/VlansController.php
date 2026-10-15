@@ -2,11 +2,15 @@
 
 namespace Dercol1\LibrenmsIpam\Web;
 
+use Dercol1\LibrenmsIpam\Models\Location;
 use Dercol1\LibrenmsIpam\Models\Site;
 use Dercol1\LibrenmsIpam\Models\Vlan;
+use Dercol1\LibrenmsIpam\Models\VlanLocation;
+use Dercol1\LibrenmsIpam\Models\VlanName;
 use Dercol1\LibrenmsIpam\Models\VlanOwner;
 use Dercol1\LibrenmsIpam\Support\SchemaInstaller;
 use Dercol1\LibrenmsIpam\Support\ScopeRules;
+use Dercol1\LibrenmsIpam\Vlans\VlanCollapser;
 use Dercol1\LibrenmsIpam\Vlans\VlanLinker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -104,6 +108,8 @@ class VlansController extends Controller
             'vlans' => $page,
             'options' => [
                 'sites' => $directory->options(),
+                'rooms' => Location::query()->orderBy('name')->pluck('name', 'location_id')
+                    ->map(fn ($name): string => (string) $name)->all(),
                 'owners' => VlanOwner::query()->orderBy('name')->pluck('name', 'vlan_owner_id'),
             ],
             'directory' => $directory,
@@ -194,10 +200,37 @@ class VlansController extends Controller
             'ignored' => ['nullable', 'boolean'],
         ]);
 
+        $targetSiteId = (int) ($data['site_id'] ?? $vlan->site_id);
+
+        // A vlan is one record per (id, domain, site), and that key is the
+        // collision scope: two records of vlan 100 at one site would be two
+        // broadcast domains where there is one. Moving this record onto a site
+        // that already reports the same vlan is not a mistake to refuse, it is
+        // the operator saying the two are one domain — so they collapse instead,
+        // and the record that was already there is the one that survives,
+        // because it is the one its occurrences are already classified into.
+        if ($targetSiteId !== (int) $vlan->site_id) {
+            $twin = Vlan::query()
+                ->where('vlan_id', $vlan->vlan_id)
+                ->where('vlan_domain', $vlan->vlan_domain)
+                ->where('site_id', $targetSiteId)
+                ->where('vlan_record_id', '!=', $vlan->vlan_record_id)
+                ->first();
+
+            if ($twin !== null) {
+                (new VlanCollapser)->collapse($twin, $vlan, $data);
+
+                return back()->with('success', __('ipam::ipam.vlans.collapsed', [
+                    'vlan' => $vlan->vlan_id,
+                    'site' => (string) (Site::query()->find($targetSiteId)->name ?? $targetSiteId),
+                ]));
+            }
+        }
+
         $vlan->fill([
             'name' => $data['name'] ?? $vlan->name,
             'description' => $data['description'] ?? $vlan->description,
-            'site_id' => (int) ($data['site_id'] ?? $vlan->site_id),
+            'site_id' => $targetSiteId,
             'vlan_owner_id' => (int) ($data['vlan_owner_id'] ?? $vlan->vlan_owner_id),
         ]);
 
@@ -232,6 +265,7 @@ class VlansController extends Controller
             'vlan_id' => ['required', 'integer', 'min:1', 'max:4094'],
             'vlan_domain' => ['nullable', 'integer', 'min:1'],
             'site_id' => ['required', 'integer', 'min:1', 'exists:ipam_sites,site_id'],
+            'location_id' => ['nullable', 'integer', 'exists:ipam_locations,location_id'],
             'name' => ['nullable', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:1000'],
         ]);
@@ -249,7 +283,7 @@ class VlansController extends Controller
             return back()->with('error', __('ipam::ipam.vlans.already_recorded', ['vlan' => $vlanId]));
         }
 
-        Vlan::query()->create([
+        $vlan = Vlan::query()->create([
             'vlan_id' => $vlanId,
             'vlan_domain' => $domain,
             'site_id' => (int) $data['site_id'],
@@ -260,6 +294,15 @@ class VlansController extends Controller
             // exactly as written
             'auto_created' => false,
         ]);
+
+        // the room it is planned for, which is the whole point of writing a
+        // vlan down before anything is plugged into it
+        if (! empty($data['location_id'])) {
+            VlanLocation::query()->create([
+                'vlan_record_id' => $vlan->vlan_record_id,
+                'location_id' => (int) $data['location_id'],
+            ]);
+        }
 
         return back()->with('success', __('ipam::ipam.created', ['what' => "vlan $vlanId"]));
     }
@@ -332,6 +375,82 @@ class VlansController extends Controller
         (new VlanLinker)->describe($vlanRecordId, (string) ($data['description'] ?? ''));
 
         return back()->with('success', __('ipam::ipam.annotated'));
+    }
+
+    /**
+     * Delete a vlan record the operator owns.
+     *
+     * Two refusals, both about what the row is. One the import owns: the device
+     * still reports it and the next poll would recreate it, so deleting is only a
+     * slower way of hiding it. Two that something hangs off it — addresses
+     * classified into the record, or a member of a stretched domain — because
+     * both would be left pointing at nothing, and re-homing them is a decision
+     * about where they belong rather than a side effect of a delete.
+     */
+    public function destroy(Request $request, int $vlanRecordId): RedirectResponse
+    {
+        $this->authorizeManage();
+
+        $vlan = Vlan::query()->findOrFail($vlanRecordId);
+
+        if (! $vlan->isManual()) {
+            return back()->with('error', __('ipam::ipam.vlans.delete_imported'));
+        }
+
+        if ((int) $vlan->vlan_group_id > 0) {
+            return back()->with('error', __('ipam::ipam.vlans.delete_linked'));
+        }
+
+        $addresses = (int) $vlan->addresses()->count();
+
+        if ($addresses > 0) {
+            return back()->with('error', __('ipam::ipam.vlans.delete_in_use', ['count' => $addresses]));
+        }
+
+        $label = $vlan->label();
+
+        VlanLocation::query()->where('vlan_record_id', $vlanRecordId)->delete();
+        VlanName::query()->where('vlan_record_id', $vlanRecordId)->delete();
+        $vlan->delete();
+
+        return back()->with('success', __('ipam::ipam.deleted', ['what' => $label]));
+    }
+
+    /**
+     * Attribute a vlan to a room by hand, or take that back.
+     *
+     * The import records the rooms a vlan was *seen* in, which is not the same
+     * statement: a vlan planned for a room nothing has been plugged into yet has
+     * to be written down somewhere, and saying so is one tick. A room a device
+     * does report comes back on the next import, because that is the truth the
+     * poll has.
+     */
+    public function room(Request $request, int $vlanRecordId): RedirectResponse
+    {
+        $this->authorizeManage();
+
+        $data = $request->validate([
+            'location_id' => ['required', 'integer', 'exists:ipam_locations,location_id'],
+            'remove' => ['nullable', 'boolean'],
+        ]);
+
+        $vlan = Vlan::query()->findOrFail($vlanRecordId);
+
+        if ($request->boolean('remove')) {
+            VlanLocation::query()
+                ->where('vlan_record_id', $vlanRecordId)
+                ->where('location_id', (int) $data['location_id'])
+                ->delete();
+
+            return back()->with('success', __('ipam::ipam.vlans.room_removed'));
+        }
+
+        VlanLocation::query()->firstOrCreate([
+            'vlan_record_id' => $vlanRecordId,
+            'location_id' => (int) $data['location_id'],
+        ]);
+
+        return back()->with('success', __('ipam::ipam.vlans.room_added'));
     }
 
     /**

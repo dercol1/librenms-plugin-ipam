@@ -98,6 +98,19 @@ class Address extends BaseModel
     }
 
     /**
+     * Is this row the operator's rather than the import's?
+     *
+     * An occurrence on a real port belongs to LibreNMS: deleting it would only
+     * last until the next poll, so those are hideable and nothing more. A row
+     * with no port behind it is a plan — the address of something not plugged
+     * in yet — and a plan is only ever removed by the person who wrote it.
+     */
+    public function isManual(): bool
+    {
+        return $this->port_id === 0 && $this->scope_locked;
+    }
+
+    /**
      * Has this occurrence been placed in a scope at all?
      *
      * An occurrence with neither vlan nor site cannot be compared to anything,
